@@ -24,6 +24,11 @@ CODEX_SKIP_GIT_REPO_CHECK="${CODEX_SKIP_GIT_REPO_CHECK:-0}"
 CODEX_NETWORK_ACCESS="${CODEX_NETWORK_ACCESS:-0}"
 CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-default}"
 CLAUDE_NO_SESSION_PERSISTENCE="${CLAUDE_NO_SESSION_PERSISTENCE:-1}"
+# Defaults Claude phases to metered API billing rather than whatever
+# subscription auth happens to be in the calling shell's environment --
+# unattended runs shouldn't draw on a human's interactive subscription quota.
+# Set ANTHROPIC_API_KEY yourself before invoking this script to override.
+S2C_CLAUDE_API_KEY_FILE="${S2C_CLAUDE_API_KEY_FILE:-$HOME/.config/e3d-pilot/anthropic-api-key}"
 ADD_DIRS="${ADD_DIRS:-${CODEX_ADD_DIRS:-}}"
 DEFAULT_MODEL="${DEFAULT_MODEL:-}"
 HIGH_MODEL="${HIGH_MODEL:-}"
@@ -83,6 +88,10 @@ Environment overrides:
   CODEX_SKIP_GIT_REPO_CHECK=0
   CLAUDE_PERMISSION_MODE=default
   CLAUDE_NO_SESSION_PERSISTENCE=1
+  S2C_CLAUDE_API_KEY_FILE=~/.config/e3d-pilot/anthropic-api-key
+    (sourced into ANTHROPIC_API_KEY before a Claude phase, only if
+    ANTHROPIC_API_KEY isn't already set -- defaults Claude phases to
+    metered billing instead of the calling shell's subscription auth)
   ADD_DIRS="/path/to/extra/repo /path/to/output"
   DEFAULT_MODEL=<provider default>
   HIGH_MODEL=<provider high>
@@ -1287,6 +1296,10 @@ run_claude_phase() {
   local add_dir
 
   echo "Status: starting Claude phase run."
+  if [[ -z "${ANTHROPIC_API_KEY:-}" && -f "$S2C_CLAUDE_API_KEY_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$S2C_CLAUDE_API_KEY_FILE"
+  fi
   claude_args=(
     --print
     --model "$model"

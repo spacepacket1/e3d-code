@@ -297,6 +297,7 @@ COMMON_READ_FILES="package.json pipeline.js server.js"
 - `CODEX_NETWORK_ACCESS`: set to `1` to pass `-c sandbox_workspace_write.network_access=true` to `codex exec`, enabling outbound network and inbound socket binds inside the `workspace-write` sandbox; default `0` keeps Codex's own network-disabled default. Needed for phases whose verification binds a listening socket (e.g. a local web-server test) — without it, `codex exec`'s sandbox denies the bind with `EPERM`.
 - `CLAUDE_PERMISSION_MODE`: passed to `claude --permission-mode`
 - `CLAUDE_NO_SESSION_PERSISTENCE`: set to `0` to let Claude persist phase sessions
+- `S2C_CLAUDE_API_KEY_FILE` (default `~/.config/e3d-pilot/anthropic-api-key`): a shell snippet (`export ANTHROPIC_API_KEY="..."`) sourced before a Claude phase, but only if `ANTHROPIC_API_KEY` isn't already set in the environment. Defaults unattended Claude phases to metered API billing instead of whatever interactive subscription auth the calling shell happens to have — set `ANTHROPIC_API_KEY` yourself beforehand to use something else.
 - `ADD_DIRS`: space-separated directories to pass as repeated `--add-dir` flags to the selected provider
 - `DEFAULT_MODEL`, `HIGH_MODEL`, `MINI_MODEL`: provider-specific default routed model names
 - `MODEL_OVERRIDES`: exact `phase:model` or `phase:provider:model` mapping that beats heuristic routing and spec annotations
