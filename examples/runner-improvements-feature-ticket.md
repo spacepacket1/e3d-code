@@ -2,7 +2,7 @@
 
 ## Overview
 
-Improve `codex-spec-runner` so fresh Codex sessions waste less context rediscovering the same repository facts, fail earlier on invalid setup, and leave behind useful execution records that make multi-phase work easier to resume and audit.
+Improve `spec2code` so fresh Codex sessions waste less context rediscovering the same repository facts, fail earlier on invalid setup, and leave behind useful execution records that make multi-phase work easier to resume and audit.
 
 The implementation should preserve the existing command-line behavior unless a phase explicitly adds a new option. Existing usage from `README.md` should continue to work.
 
@@ -24,7 +24,7 @@ The implementation should preserve the existing command-line behavior unless a p
 
 ## Existing Files
 
-- `bin/codex-spec-runner`
+- `bin/spec2code`
 - `README.md`
 - `examples/feature-ticket.md`
 
@@ -33,7 +33,7 @@ The implementation should preserve the existing command-line behavior unless a p
 - Keep the script portable Bash.
 - Keep changes scoped and readable; prefer small functions over a large control-flow rewrite.
 - Preserve existing environment overrides unless this spec explicitly changes them.
-- Generated runner state should live under `.codex-spec-runner/` inside `ROOT_DIR` by default.
+- Generated runner state should live under `.spec2code/` inside `ROOT_DIR` by default.
 - Do not commit generated state files unless documentation explicitly describes them as ignored runtime artifacts.
 - Add focused shell-level verification where practical, using `--dry-run`, `--list`, or Bash syntax checks.
 
@@ -43,19 +43,19 @@ Add a small state-directory foundation that later phases can reuse.
 
 ### Requirements
 
-- Introduce `STATE_DIR`, defaulting to `${ROOT_DIR}/.codex-spec-runner`.
+- Introduce `STATE_DIR`, defaulting to `${ROOT_DIR}/.spec2code`.
 - Introduce `CONTEXT_FILE`, defaulting to `${STATE_DIR}/context.md`.
 - Introduce `MANIFEST_FILE`, defaulting to `${STATE_DIR}/manifest.tsv`.
 - Ensure the state directory is created only when a command actually needs to write state.
-- Do not create `.codex-spec-runner/` during `--help`, `--list`, or ordinary dry-run output unless a later phase explicitly requires it.
+- Do not create `.spec2code/` during `--help`, `--list`, or ordinary dry-run output unless a later phase explicitly requires it.
 - Add a helper function for creating the state directory safely.
 - Add state-related environment overrides to usage text and README documentation.
 
 ### Acceptance Criteria
 
-- `bin/codex-spec-runner --help` documents the new environment variables.
+- `bin/spec2code --help` documents the new environment variables.
 - Existing `--list` behavior still works without creating runtime files.
-- `bash -n bin/codex-spec-runner` passes.
+- `bash -n bin/spec2code` passes.
 
 ## Phase 2 - Preflight Checks
 
@@ -79,7 +79,7 @@ Add an optional preflight check that validates the runner inputs and likely exec
 
 ### Acceptance Criteria
 
-- `codex-spec-runner examples/feature-ticket.md --preflight` reports success.
+- `spec2code examples/feature-ticket.md --preflight` reports success.
 - Missing explicit `--read` files produce a non-zero exit.
 - `--dry-run` does not require Codex CLI to be installed.
 - Existing error messages for invalid targets remain clear.
@@ -102,9 +102,9 @@ Reduce repeated `awk`/`sort` parsing by extracting phase metadata once and reusi
 
 ### Acceptance Criteria
 
-- `codex-spec-runner examples/feature-ticket.md --list` produces the same phase ordering as before.
+- `spec2code examples/feature-ticket.md --list` produces the same phase ordering as before.
 - Duplicate phase numbers in a temporary test spec fail before any Codex invocation.
-- `bash -n bin/codex-spec-runner` passes.
+- `bash -n bin/spec2code` passes.
 
 ## Phase 4 - Shared Repo Context Generation
 
@@ -131,7 +131,7 @@ Add a reusable repo briefing that each phase can read before implementation.
 
 ### Acceptance Criteria
 
-- `codex-spec-runner examples/feature-ticket.md --prepare-context` creates `.codex-spec-runner/context.md`.
+- `spec2code examples/feature-ticket.md --prepare-context` creates `.spec2code/context.md`.
 - A dry-run after context creation includes the context file in the "Start by reading" block.
 - `USE_SHARED_CONTEXT=0` omits the context file from prompts.
 - Context generation should not fail merely because the directory is not a git repo.
@@ -151,7 +151,7 @@ Make per-phase prompts shorter while retaining the instructions that matter most
 
 ### Acceptance Criteria
 
-- `codex-spec-runner examples/feature-ticket.md 1 --dry-run` still clearly tells Codex:
+- `spec2code examples/feature-ticket.md 1 --dry-run` still clearly tells Codex:
   - which phase to implement
   - which spec file the phase came from
   - which files to read first
@@ -259,9 +259,9 @@ Update the public documentation so users can adopt the new workflow without read
 
 ### Acceptance Criteria
 
-- README examples use the actual command name `codex-spec-runner`.
+- README examples use the actual command name `spec2code`.
 - A new user can understand the recommended `--preflight`, `--prepare-context`, and `all` flow.
-- Documentation makes clear that `.codex-spec-runner/` is runtime state.
+- Documentation makes clear that `.spec2code/` is runtime state.
 
 ## Phase 10 - Ignore Runtime State and Final Verification
 
@@ -269,14 +269,14 @@ Make generated runtime state safe by default and verify the completed workflow.
 
 ### Requirements
 
-- Add `.codex-spec-runner/` to `.gitignore`.
+- Add `.spec2code/` to `.gitignore`.
 - If the repo does not have `.gitignore`, create one with only the required runtime-state entry.
 - Run shell syntax verification.
 - Run representative command checks:
-  - `codex-spec-runner examples/feature-ticket.md --list`
-  - `codex-spec-runner examples/feature-ticket.md --preflight`
-  - `codex-spec-runner examples/feature-ticket.md 1 --dry-run`
-  - `codex-spec-runner examples/feature-ticket.md all --dry-run`
+  - `spec2code examples/feature-ticket.md --list`
+  - `spec2code examples/feature-ticket.md --preflight`
+  - `spec2code examples/feature-ticket.md 1 --dry-run`
+  - `spec2code examples/feature-ticket.md all --dry-run`
 - Do not require actual Codex execution for final verification.
 
 ### Acceptance Criteria

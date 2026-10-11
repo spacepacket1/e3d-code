@@ -1,4 +1,4 @@
 .DS_Store
 *.log
 .env
-.codex-spec-runner/
+.spec2code/

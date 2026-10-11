@@ -3,7 +3,7 @@ set -euo pipefail
 
 VERSION="0.3.0"
 ROOT_DIR="${ROOT_DIR:-$(pwd)}"
-STATE_DIR="${STATE_DIR:-${ROOT_DIR}/.codex-spec-runner}"
+STATE_DIR="${STATE_DIR:-${ROOT_DIR}/.spec2code}"
 CONTEXT_FILE="${CONTEXT_FILE:-${STATE_DIR}/context.md}"
 MANIFEST_FILE="${MANIFEST_FILE:-${STATE_DIR}/manifest.tsv}"
 SUMMARY_DIR="${SUMMARY_DIR:-${STATE_DIR}/summaries}"
@@ -34,7 +34,7 @@ COMMON_READ_FILES="${COMMON_READ_FILES:-package.json}"
 usage() {
   cat <<'USAGE'
 Usage:
-  codex-spec-runner <spec.md> <all|phase-number> [options]
+  spec2code <spec.md> <all|phase-number> [options]
 
 Options:
   --from <n>           Start phase for "all"
@@ -51,18 +51,18 @@ Options:
   -h, --help           Show this help
 
 Examples:
-  codex-spec-runner docs/feature-ticket.md --list
-  codex-spec-runner docs/feature-ticket.md 3 --dry-run
-  codex-spec-runner docs/feature-ticket.md all --from 4 --to 8
-  codex-spec-runner docs/feature-ticket.md 3 --provider claude
-  MODEL_OVERRIDES="4:gpt-5.5,7:claude:sonnet" codex-spec-runner docs/feature-ticket.md all
+  spec2code docs/feature-ticket.md --list
+  spec2code docs/feature-ticket.md 3 --dry-run
+  spec2code docs/feature-ticket.md all --from 4 --to 8
+  spec2code docs/feature-ticket.md 3 --provider claude
+  MODEL_OVERRIDES="4:gpt-5.5,7:claude:sonnet" spec2code docs/feature-ticket.md all
 
 Environment overrides:
   ROOT_DIR=/path/to/repo
-  STATE_DIR=/path/to/repo/.codex-spec-runner
-  CONTEXT_FILE=/path/to/repo/.codex-spec-runner/context.md
-  MANIFEST_FILE=/path/to/repo/.codex-spec-runner/manifest.tsv
-  SUMMARY_DIR=/path/to/repo/.codex-spec-runner/summaries
+  STATE_DIR=/path/to/repo/.spec2code
+  CONTEXT_FILE=/path/to/repo/.spec2code/context.md
+  MANIFEST_FILE=/path/to/repo/.spec2code/manifest.tsv
+  SUMMARY_DIR=/path/to/repo/.spec2code/summaries
   PROVIDER=codex
   CODEX_BIN=codex
   CLAUDE_BIN=claude
@@ -176,7 +176,7 @@ load_phase_metadata() {
   local metadata_file
 
   PHASE_METADATA=()
-  metadata_file="$(mktemp "${TMPDIR:-/tmp}/codex-spec-runner.phases.XXXXXX")" || die "failed to create temp file"
+  metadata_file="$(mktemp "${TMPDIR:-/tmp}/spec2code.phases.XXXXXX")" || die "failed to create temp file"
 
   if ! awk '
     /^#{1,6}[[:space:]]+.*[Pp]hase[[:space:]]+[0-9]+/ {
@@ -524,8 +524,8 @@ likely_verification_commands() {
   if [[ -f "$ROOT_DIR/Makefile" ]]; then
     commands+=("make test")
   fi
-  if [[ -f "$ROOT_DIR/bin/codex-spec-runner" ]]; then
-    commands+=("bash -n bin/codex-spec-runner")
+  if [[ -f "$ROOT_DIR/bin/spec2code" ]]; then
+    commands+=("bash -n bin/spec2code")
   fi
 
   if [[ ${#commands[@]} -eq 0 ]]; then
@@ -779,8 +779,8 @@ inferred_verification_commands() {
     printf '%s\n' "make test"
   elif [[ -d "$ROOT_DIR/tests" ]] && find "$ROOT_DIR/tests" -maxdepth 1 -type f -name '*.sh' -print -quit 2>/dev/null | grep -q .; then
     printf '%s\n' 'for test_file in tests/*.sh; do bash "$test_file"; done'
-  elif [[ -f "$ROOT_DIR/bin/codex-spec-runner" ]]; then
-    printf '%s\n' "bash -n bin/codex-spec-runner"
+  elif [[ -f "$ROOT_DIR/bin/spec2code" ]]; then
+    printf '%s\n' "bash -n bin/spec2code"
   fi
 }
 
@@ -1378,7 +1378,7 @@ if [[ $# -ge 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
 fi
 
 if [[ $# -ge 1 && ( "$1" == "--version" || "$1" == "-V" ) ]]; then
-  printf 'codex-spec-runner %s\n' "$VERSION"
+  printf 'spec2code %s\n' "$VERSION"
   exit 0
 fi
 
@@ -1462,7 +1462,7 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     --version|-V)
-      printf 'codex-spec-runner %s\n' "$VERSION"
+      printf 'spec2code %s\n' "$VERSION"
       exit 0
       ;;
     *)

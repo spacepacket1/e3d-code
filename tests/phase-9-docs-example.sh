@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/codex-spec-runner"
+RUNNER="${REPO_DIR}/bin/spec2code"
 SPEC_FILE="${REPO_DIR}/examples/feature-ticket.md"
 
 bash -n "$RUNNER"

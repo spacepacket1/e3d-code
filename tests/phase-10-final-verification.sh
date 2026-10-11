@@ -2,9 +2,9 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/codex-spec-runner"
+RUNNER="${REPO_DIR}/bin/spec2code"
 SPEC_FILE="${REPO_DIR}/examples/feature-ticket.md"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-spec-runner-phase10.XXXXXX")"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec2code-phase10.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 PATH="${REPO_DIR}/bin:${PATH}"
@@ -13,25 +13,25 @@ bash -n "$RUNNER"
 
 version_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner --version
+  spec2code --version
 )"
-printf '%s\n' "$version_output" | grep -F "codex-spec-runner 0.3.0" >/dev/null
+printf '%s\n' "$version_output" | grep -F "spec2code 0.3.0" >/dev/null
 
 list_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" --list
+  spec2code "$SPEC_FILE" --list
 )"
 printf '%s\n' "$list_output" | grep -F $'Phase 1\tcodex\tgpt-5.4-mini\tCore Parser' >/dev/null
 
 preflight_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" --preflight
+  spec2code "$SPEC_FILE" --preflight
 )"
 printf '%s\n' "$preflight_output" | grep -F "result: ok with 1 warning(s)" >/dev/null
 
 phase_dry_run_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" 1 --dry-run
+  spec2code "$SPEC_FILE" 1 --dry-run
 )"
 printf '%s\n' "$phase_dry_run_output" | grep -F "== Phase 1: Core Parser ==" >/dev/null
 printf '%s\n' "$phase_dry_run_output" | grep -F "Provider: codex" >/dev/null
@@ -43,32 +43,32 @@ fi
 
 verbose_phase_dry_run_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" 1 --dry-run --verbose
+  spec2code "$SPEC_FILE" 1 --dry-run --verbose
 )"
 printf '%s\n' "$verbose_phase_dry_run_output" | grep -F -- "--- prompt ---" >/dev/null
 
 all_dry_run_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" all --dry-run
+  spec2code "$SPEC_FILE" all --dry-run
 )"
 printf '%s\n' "$all_dry_run_output" | grep -F "== Phase 3: Dashboard Widget ==" >/dev/null
 
 unset_verbose_output="$(
   cd "$REPO_DIR" &&
   unset VERBOSE &&
-  codex-spec-runner "$SPEC_FILE" all --from 1 --to 1 --dry-run
+  spec2code "$SPEC_FILE" all --from 1 --to 1 --dry-run
 )"
 printf '%s\n' "$unset_verbose_output" | grep -F "Status: dry-run only; Codex was not started." >/dev/null
 
 claude_list_output="$(
   cd "$REPO_DIR" &&
-  PROVIDER=claude codex-spec-runner "$SPEC_FILE" --list
+  PROVIDER=claude spec2code "$SPEC_FILE" --list
 )"
 printf '%s\n' "$claude_list_output" | grep -F $'Phase 1\tclaude\thaiku\tCore Parser' >/dev/null
 
 claude_phase_dry_run_output="$(
   cd "$REPO_DIR" &&
-  codex-spec-runner "$SPEC_FILE" 1 --dry-run --provider claude
+  spec2code "$SPEC_FILE" 1 --dry-run --provider claude
 )"
 printf '%s\n' "$claude_phase_dry_run_output" | grep -F "Provider: claude" >/dev/null
 printf '%s\n' "$claude_phase_dry_run_output" | grep -F "Model: haiku" >/dev/null
@@ -185,7 +185,7 @@ grep -F "Implement Phase 2 (Report Writer)" "$mixed_claude_stdin" >/dev/null
 
 mixed_list_output="$(
   cd "$REPO_DIR" &&
-  MODEL_OVERRIDES="1:codex:gpt-5.4,2:claude:sonnet" codex-spec-runner "$SPEC_FILE" --list
+  MODEL_OVERRIDES="1:codex:gpt-5.4,2:claude:sonnet" spec2code "$SPEC_FILE" --list
 )"
 printf '%s\n' "$mixed_list_output" | grep -F $'Phase 1\tcodex\tgpt-5.4\tCore Parser' >/dev/null
 printf '%s\n' "$mixed_list_output" | grep -F $'Phase 2\tclaude\tsonnet\tReport Writer' >/dev/null

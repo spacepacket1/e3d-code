@@ -1,18 +1,18 @@
-# codex-spec-runner
+# spec2code
 
 Run Codex CLI or Claude CLI phase-by-phase from Markdown feature specs with model routing, shared context, and resumable execution.
 
 Current version: `0.3.0`
 
-`codex-spec-runner` turns a phased Markdown spec into separate provider runs. Each phase gets a fresh conversation, a focused prompt, and a model selected from conservative defaults or explicit overrides.
+`spec2code` turns a phased Markdown spec into separate provider runs. Each phase gets a fresh conversation, a focused prompt, and a model selected from conservative defaults or explicit overrides.
 
 ## Demo
 
 Featured as an e3d-cast gallery sample:
 
-<video src="https://cast.e3d.ai/samples/codex-spec-runner/video.mp4" controls width="720"></video>
+<video src="https://cast.e3d.ai/samples/spec2code/video.mp4" controls width="720"></video>
 
-[Watch the video](https://cast.e3d.ai/samples/codex-spec-runner/video.mp4)
+[Watch the video](https://cast.e3d.ai/samples/spec2code/video.mp4)
 
 ## Why
 
@@ -36,15 +36,15 @@ claude --help
 Clone the repo and add `bin` to your `PATH`:
 
 ```bash
-git clone https://github.com/spacepacket1/codex-spec-runner.git
-cd codex-spec-runner
+git clone https://github.com/spacepacket1/spec2code.git
+cd spec2code
 export PATH="$PWD/bin:$PATH"
 ```
 
 Or run it directly:
 
 ```bash
-./bin/codex-spec-runner path/to/spec.md --list
+./bin/spec2code path/to/spec.md --list
 ```
 
 ## Spec Format
@@ -65,7 +65,7 @@ Phase metadata is parsed once per runner process, sorted numerically, and duplic
 List phases with provider and model:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md --list
+spec2code docs/feature-ticket.md --list
 ```
 
 This prints provider and model per phase, for example:
@@ -78,25 +78,25 @@ Phase 2  claude  sonnet        Report Writer
 Print the installed runner version:
 
 ```bash
-codex-spec-runner --version
+spec2code --version
 ```
 
 Dry-run one phase status:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md 3 --dry-run
+spec2code docs/feature-ticket.md 3 --dry-run
 ```
 
 Print the full generated prompt for debugging:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md 3 --dry-run --verbose
+spec2code docs/feature-ticket.md 3 --dry-run --verbose
 ```
 
 Run one phase with Claude:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md 3 --provider claude
+spec2code docs/feature-ticket.md 3 --provider claude
 ```
 
 `--provider` sets the default provider for phases that do not have a mixed-provider override.
@@ -104,49 +104,49 @@ codex-spec-runner docs/feature-ticket.md 3 --provider claude
 Run preflight checks only:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md --preflight
+spec2code docs/feature-ticket.md --preflight
 ```
 
 Prepare shared repo context only:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md --prepare-context
+spec2code docs/feature-ticket.md --prepare-context
 ```
 
 Run one phase:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md 3
+spec2code docs/feature-ticket.md 3
 ```
 
 Run all phases:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md all
+spec2code docs/feature-ticket.md all
 ```
 
 Refresh shared repo context before execution:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md all --refresh-context
+spec2code docs/feature-ticket.md all --refresh-context
 ```
 
 Resume from a phase after a rate limit or interruption:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md all --from 9
+spec2code docs/feature-ticket.md all --from 9
 ```
 
 Run a bounded range:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md all --from 4 --to 8
+spec2code docs/feature-ticket.md all --from 4 --to 8
 ```
 
 Add files the provider should read first:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md 5 \
+spec2code docs/feature-ticket.md 5 \
   --read package.json \
   --read pipeline.js \
   --read server.js
@@ -155,9 +155,9 @@ codex-spec-runner docs/feature-ticket.md 5 \
 Recommended workflow for a new spec:
 
 ```bash
-codex-spec-runner docs/feature-ticket.md --preflight
-codex-spec-runner docs/feature-ticket.md --prepare-context
-codex-spec-runner docs/feature-ticket.md all
+spec2code docs/feature-ticket.md --preflight
+spec2code docs/feature-ticket.md --prepare-context
+spec2code docs/feature-ticket.md all
 ```
 
 Use `--refresh-context` when the repo changed enough that the shared context should be regenerated before execution.
@@ -165,7 +165,7 @@ Normal non-dry-run execution runs preflight automatically unless `SKIP_PREFLIGHT
 
 ## Runtime State
 
-`.codex-spec-runner/` is runner runtime state. It is generated on demand and can contain:
+`.spec2code/` is runner runtime state. It is generated on demand and can contain:
 
 - `context.md`: shared repo context used to reduce repeated setup across phases
 - `manifest.tsv`: one tab-separated row per attempted phase run
@@ -177,9 +177,9 @@ Providers are asked to record a concise implementation handoff with changes, dec
 
 These generated files are safe to delete:
 
-- `.codex-spec-runner/context.md`
-- `.codex-spec-runner/manifest.tsv`
-- `.codex-spec-runner/summaries/`
+- `.spec2code/context.md`
+- `.spec2code/manifest.tsv`
+- `.spec2code/summaries/`
 
 Deleting them removes runner history and cached context, but does not affect your source files.
 
@@ -221,14 +221,14 @@ Override exact phase-to-model mapping:
 
 ```bash
 MODEL_OVERRIDES="4:gpt-5.5,14:gpt-5.4-mini" \
-  codex-spec-runner docs/feature-ticket.md all
+  spec2code docs/feature-ticket.md all
 ```
 
 Override exact phase-to-provider-and-model mapping:
 
 ```bash
 MODEL_OVERRIDES="1:codex:gpt-5.4,2:claude:sonnet" \
-  codex-spec-runner docs/feature-ticket.md all
+  spec2code docs/feature-ticket.md all
 ```
 
 Override default model names:
@@ -237,7 +237,7 @@ Override default model names:
 DEFAULT_MODEL=gpt-5.4 \
 HIGH_MODEL=gpt-5.5 \
 MINI_MODEL=gpt-5.4-mini \
-  codex-spec-runner docs/feature-ticket.md --list
+  spec2code docs/feature-ticket.md --list
 ```
 
 ## Configuration
@@ -253,10 +253,10 @@ Environment overrides:
 
 ```bash
 ROOT_DIR=/path/to/repo
-STATE_DIR=/path/to/repo/.codex-spec-runner
-CONTEXT_FILE=/path/to/repo/.codex-spec-runner/context.md
-MANIFEST_FILE=/path/to/repo/.codex-spec-runner/manifest.tsv
-SUMMARY_DIR=/path/to/repo/.codex-spec-runner/summaries
+STATE_DIR=/path/to/repo/.spec2code
+CONTEXT_FILE=/path/to/repo/.spec2code/context.md
+MANIFEST_FILE=/path/to/repo/.spec2code/manifest.tsv
+SUMMARY_DIR=/path/to/repo/.spec2code/summaries
 PROVIDER=codex
 CODEX_BIN=codex
 CLAUDE_BIN=claude
@@ -282,7 +282,7 @@ MODEL_OVERRIDES="4:gpt-5.5,14:claude:sonnet"
 COMMON_READ_FILES="package.json pipeline.js server.js"
 ```
 
-- `STATE_DIR`, `CONTEXT_FILE`, `MANIFEST_FILE`, `SUMMARY_DIR`: runtime-state paths under `.codex-spec-runner/`
+- `STATE_DIR`, `CONTEXT_FILE`, `MANIFEST_FILE`, `SUMMARY_DIR`: runtime-state paths under `.spec2code/`
 - `PROVIDER`: `codex` or `claude`
 - `CODEX_BIN`, `CLAUDE_BIN`: provider CLI binary name or path
 - `SKIP_PREFLIGHT`: set to `1` to skip automatic preflight on normal runs
