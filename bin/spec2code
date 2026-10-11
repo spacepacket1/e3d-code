@@ -30,6 +30,10 @@ HIGH_MODEL="${HIGH_MODEL:-}"
 MINI_MODEL="${MINI_MODEL:-}"
 MODEL_OVERRIDES="${MODEL_OVERRIDES:-}"
 COMMON_READ_FILES="${COMMON_READ_FILES:-package.json}"
+MAX_PHASES_PER_RUN="${MAX_PHASES_PER_RUN:-8}"
+MAX_PROVIDER_TOKENS_PER_PHASE="${MAX_PROVIDER_TOKENS_PER_PHASE:-120000}"
+CODEX_CONTEXT_WINDOW="${CODEX_CONTEXT_WINDOW:-128000}"
+CODEX_AUTO_COMPACT_TOKEN_LIMIT="${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-96000}"
 
 usage() {
   cat <<'USAGE'
@@ -85,6 +89,10 @@ Environment overrides:
   MINI_MODEL=<provider mini>
   MODEL_OVERRIDES="phase:model,phase:provider:model"
   COMMON_READ_FILES="package.json pipeline.js server.js"
+  MAX_PHASES_PER_RUN=8
+  MAX_PROVIDER_TOKENS_PER_PHASE=120000
+  CODEX_CONTEXT_WINDOW=128000
+  CODEX_AUTO_COMPACT_TOKEN_LIMIT=96000
 
 Expected spec format:
   Markdown headings containing a phase number, for example:
@@ -1061,6 +1069,10 @@ run_preflight() {
 
           if (( selected > 0 )); then
             preflight_note "ok" "selected ${selected} phase(s) for target all"
+            if [[ "$MAX_PHASES_PER_RUN" =~ ^[0-9]+$ ]] && (( MAX_PHASES_PER_RUN > 0 && selected > MAX_PHASES_PER_RUN )); then
+              preflight_note "error" "selected ${selected} phases exceeds MAX_PHASES_PER_RUN=${MAX_PHASES_PER_RUN}; run a bounded --from/--to batch"
+              errors=$((errors + 1))
+            fi
           else
             preflight_note "error" "selected phase range does not include any phases"
             errors=$((errors + 1))
@@ -1206,7 +1218,7 @@ run_codex_phase() {
   local phase="$1"
   local verbose="$2"
   local model="$3"
-  local exit_status
+  local exit_status tokens=0 stderr_file
   local -a codex_args=()
   local -a add_dirs=()
   local add_dir
@@ -1225,6 +1237,10 @@ run_codex_phase() {
   if [[ "$CODEX_NETWORK_ACCESS" == "1" ]]; then
     codex_args+=(-c sandbox_workspace_write.network_access=true)
   fi
+  codex_args+=(
+    -c "model_context_window=${CODEX_CONTEXT_WINDOW}"
+    -c "model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKEN_LIMIT}"
+  )
   if [[ -n "$ADD_DIRS" ]]; then
     # shellcheck disable=SC2206
     add_dirs=($ADD_DIRS)
@@ -1240,10 +1256,22 @@ run_codex_phase() {
     -
   )
 
-  if phase_prompt "$phase" "$verbose" | "$CODEX_BIN" "${codex_args[@]}"; then
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/spec2code-usage.XXXXXX")"
+  if phase_prompt "$phase" "$verbose" | "$CODEX_BIN" "${codex_args[@]}" 2> "$stderr_file"; then
     exit_status=0
   else
     exit_status=$?
+  fi
+
+  cat "$stderr_file" >&2
+  tokens="$(awk 'take { gsub(/,/,"",$0); if ($0 ~ /^[0-9]+$/) total += $0; take=0 } /^tokens used$/ { take=1 } END { print total+0 }' "$stderr_file")"
+  rm -f "$stderr_file"
+  printf 'Provider tokens: %s (ceiling: %s)\n' "$tokens" "$MAX_PROVIDER_TOKENS_PER_PHASE"
+  if [[ "$MAX_PROVIDER_TOKENS_PER_PHASE" =~ ^[0-9]+$ ]] \
+    && (( MAX_PROVIDER_TOKENS_PER_PHASE > 0 && tokens > MAX_PROVIDER_TOKENS_PER_PHASE )); then
+    printf 'error: phase %s exceeded provider token ceiling (%s > %s)\n' \
+      "$phase" "$tokens" "$MAX_PROVIDER_TOKENS_PER_PHASE" >&2
+    exit_status=75
   fi
 
   return "$exit_status"
