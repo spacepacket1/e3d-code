@@ -75,6 +75,15 @@ Phase 1  codex   gpt-5.4-mini  Core Parser
 Phase 2  claude  sonnet        Report Writer
 ```
 
+By default, a phase with no `runner:model` annotation and no `MODEL_OVERRIDES` entry gets its tier (`mini`/`default`/`high`) from a static keyword grep over its title and body (`phase_model_tier` in `bin/spec2code`) — fast and free, but not actual judgment. Pass `--auto-route` to replace that keyword grep with one cheap model call per phase instead, asking the provider that will execute the phase (via its own `mini` tier — `haiku` for Claude, `gpt-5.4-mini` for Codex) to classify the phase's real complexity:
+
+```bash
+spec2code docs/feature-ticket.md --list --auto-route
+spec2code docs/feature-ticket.md --list --provider claude --auto-route
+```
+
+An explicit `runner:model=` annotation or a `MODEL_OVERRIDES` entry always wins over `--auto-route` — this only replaces the keyword-heuristic fallback, never author intent. Classifications are cached by `(provider, title, body)` content digest in `AUTO_ROUTE_CACHE_FILE` (default `.spec2code/route-cache.tsv`), so re-running `--list` against an unchanged phase costs nothing on the second call. If the classifier call fails or returns something unparseable, the runner falls back to the keyword heuristic and prints a warning rather than failing the run.
+
 Print the installed runner version:
 
 ```bash
@@ -279,6 +288,8 @@ DEFAULT_MODEL=<provider default>
 HIGH_MODEL=<provider high>
 MINI_MODEL=<provider mini>
 MODEL_OVERRIDES="4:gpt-5.5,14:claude:sonnet"
+AUTO_ROUTE_TIER=0
+AUTO_ROUTE_CACHE_FILE=/path/to/repo/.spec2code/route-cache.tsv
 COMMON_READ_FILES="package.json pipeline.js server.js"
 ```
 
@@ -301,6 +312,8 @@ COMMON_READ_FILES="package.json pipeline.js server.js"
 - `ADD_DIRS`: space-separated directories to pass as repeated `--add-dir` flags to the selected provider
 - `DEFAULT_MODEL`, `HIGH_MODEL`, `MINI_MODEL`: provider-specific default routed model names
 - `MODEL_OVERRIDES`: exact `phase:model` or `phase:provider:model` mapping that beats heuristic routing and spec annotations
+- `AUTO_ROUTE_TIER`: set to `1` (or pass `--auto-route`) to classify tier via a cheap model call instead of the keyword heuristic, for phases with no annotation/override — see Usage above
+- `AUTO_ROUTE_CACHE_FILE` (default `.spec2code/route-cache.tsv`): where `--auto-route` classification results are cached, keyed by `(provider, title, body)` digest
 - `COMMON_READ_FILES`: space-separated files to include in every phase prompt when present
 
 By default, runner output stays high level: current phase, provider, model, status, issues, and verification. Pass `--verbose` when you need full generated prompts or detailed provider output.

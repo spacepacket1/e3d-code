@@ -52,6 +52,15 @@ MAX_PHASES_PER_RUN="${MAX_PHASES_PER_RUN:-8}"
 MAX_PROVIDER_TOKENS_PER_PHASE="${MAX_PROVIDER_TOKENS_PER_PHASE:-120000}"
 CODEX_CONTEXT_WINDOW="${CODEX_CONTEXT_WINDOW:-128000}"
 CODEX_AUTO_COMPACT_TOKEN_LIMIT="${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-96000}"
+# When enabled (--auto-route), a phase with no explicit runner:model annotation
+# and no MODEL_OVERRIDES entry is classified by a cheap model call (the
+# executing provider's own mini tier) instead of the static keyword grep in
+# phase_model_tier(). An explicit annotation or override still always wins --
+# this only replaces the keyword-heuristic fallback slot. Results are cached
+# by (provider, title, body) digest so an unchanged phase is never
+# reclassified on a later run.
+AUTO_ROUTE_TIER="${AUTO_ROUTE_TIER:-0}"
+AUTO_ROUTE_CACHE_FILE="${AUTO_ROUTE_CACHE_FILE:-${STATE_DIR}/route-cache.tsv}"
 
 usage() {
   cat <<'USAGE'
@@ -68,6 +77,10 @@ Options:
   --dry-run            Show selected phase status instead of running the provider
   --verbose            Print full generated prompts and allow detailed provider output
   --list               List detected phases with provider and model
+  --auto-route         For phases with no runner:model annotation and no
+                       MODEL_OVERRIDES entry, classify the tier (mini/default/
+                       high) with one cheap model call instead of the static
+                       keyword heuristic; cached by phase content digest
   --read <path>        Add a file to the "Start by reading" list; repeatable
   --version            Print the runner version
   -h, --help           Show this help
@@ -899,13 +912,103 @@ phase_model_tier() {
   fi
 }
 
+phase_tier_cache_key() {
+  local provider="$1" title="$2" body="$3"
+  printf '%s\x1e%s\x1e%s' "$provider" "$title" "$body" | shasum -a 256 | awk '{print $1}'
+}
+
+phase_tier_cache_lookup() {
+  local key="$1"
+  [[ -f "$AUTO_ROUTE_CACHE_FILE" ]] || return 1
+  awk -F'\t' -v k="$key" '$1==k{v=$2} END{if(v){print v; exit 0} exit 1}' "$AUTO_ROUTE_CACHE_FILE"
+}
+
+phase_tier_cache_store() {
+  local key="$1" tier="$2"
+  mkdir -p "$(dirname "$AUTO_ROUTE_CACHE_FILE")"
+  printf '%s\t%s\n' "$key" "$tier" >> "$AUTO_ROUTE_CACHE_FILE"
+}
+
+# Classifies a phase's required model tier with a single cheap (mini-tier)
+# call to the provider that will actually execute it, instead of the static
+# keyword grep in phase_model_tier(). Only invoked from phase_execution_target
+# when AUTO_ROUTE_TIER=1 and neither an explicit annotation nor
+# MODEL_OVERRIDES already decided the phase -- see phase_execution_target.
+# Falls back to the keyword heuristic (never dies) on any classification
+# failure: missing binary, network error, or a malformed/missing answer.
+classify_phase_tier_llm() {
+  local phase="$1" provider="$2"
+  local title body key cached raw tier model
+
+  title="$(phase_title "$phase")"
+  body="$(extract_phase_body "$phase")"
+  key="$(phase_tier_cache_key "$provider" "$title" "$body")"
+
+  if cached="$(phase_tier_cache_lookup "$key")"; then
+    printf '%s\n' "$cached"
+    return 0
+  fi
+
+  model="$(provider_mini_model "$provider")"
+  local prompt
+  prompt="$(cat <<PROMPT
+Classify the required model capability tier for this software implementation phase. Reply with exactly one word: mini, default, or high.
+
+- high: architecture-level design, security, concurrency/race conditions, financial/custody/compliance logic, data migrations, irreversible/high-risk changes.
+- mini: routine, low-risk work -- simple CRUD, copy/docs changes, small UI tweaks, boilerplate.
+- default: everything else.
+
+Phase title: ${title}
+
+Phase body:
+${body}
+PROMPT
+)"
+
+  case "$provider" in
+    codex)
+      local out_tmp
+      out_tmp="$(mktemp "${TMPDIR:-/tmp}/s2c-route.XXXXXX")"
+      printf '%s' "$prompt" | "$CODEX_BIN" exec --model "$model" --sandbox read-only \
+        --skip-git-repo-check --cd "$ROOT_DIR" --output-last-message "$out_tmp" - >/dev/null 2>&1
+      raw="$(cat "$out_tmp" 2>/dev/null)"
+      rm -f "$out_tmp"
+      ;;
+    claude)
+      if [[ -z "${ANTHROPIC_API_KEY:-}" && -f "$S2C_CLAUDE_API_KEY_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$S2C_CLAUDE_API_KEY_FILE"
+      fi
+      raw="$(printf '%s' "$prompt" | "$CLAUDE_BIN" --print --model "$model" \
+        --permission-mode "$CLAUDE_PERMISSION_MODE" --no-session-persistence 2>/dev/null)"
+      ;;
+    *)
+      raw=""
+      ;;
+  esac
+
+  tier="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | grep -Eo 'mini|default|high' | head -1)"
+
+  if [[ "$tier" != "mini" && "$tier" != "default" && "$tier" != "high" ]]; then
+    echo "warning: auto-route classification failed for phase $phase (provider: $provider); falling back to keyword heuristic" >&2
+    tier="$(phase_model_tier "$phase")"
+  fi
+
+  phase_tier_cache_store "$key" "$tier"
+  printf '%s\n' "$tier"
+}
+
 phase_execution_target() {
   local phase="$1"
   local default_provider="${2:-$PROVIDER}"
   local tier
   if override_execution_target "$phase" "$default_provider"; then return 0; fi
   if annotation_execution_target "$phase" "$default_provider"; then return 0; fi
-  tier="$(phase_model_tier "$phase")"
+  if [[ "$AUTO_ROUTE_TIER" == "1" ]]; then
+    tier="$(classify_phase_tier_llm "$phase" "$default_provider")"
+  else
+    tier="$(phase_model_tier "$phase")"
+  fi
   case "$tier" in
     high) printf '%s\t%s\n' "$default_provider" "$(provider_high_model "$default_provider")" ;;
     mini) printf '%s\t%s\n' "$default_provider" "$(provider_mini_model "$default_provider")" ;;
@@ -1473,6 +1576,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --list)
       LIST_ONLY="1"
+      shift
+      ;;
+    --auto-route)
+      AUTO_ROUTE_TIER="1"
       shift
       ;;
     --from)
