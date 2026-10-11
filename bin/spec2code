@@ -22,7 +22,20 @@ MODE="${MODE:-exec}"
 CODEX_EPHEMERAL="${CODEX_EPHEMERAL:-1}"
 CODEX_SKIP_GIT_REPO_CHECK="${CODEX_SKIP_GIT_REPO_CHECK:-0}"
 CODEX_NETWORK_ACCESS="${CODEX_NETWORK_ACCESS:-0}"
-CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-default}"
+# "default" (Claude Code's own CLI default) requires interactive approval for
+# every Write/Edit/Bash tool call; there's no TTY in --print mode to answer
+# that prompt, so the call is silently denied and the phase still exits 0
+# with zero files changed. Confirmed directly against the real `claude`
+# binary (2.1.296) on 2026-10-11: `--permission-mode default` produced "I
+# couldn't create hello.txt... write permission hasn't been granted" with
+# exit 0 and no file written; `--permission-mode bypassPermissions` created
+# the file correctly. This mirrors how CODEX_... above already runs fully
+# unattended (APPROVAL_POLICY=on-request inside a workspace-write sandbox) --
+# bypassPermissions gives Claude the same effective autonomy within this
+# script's own external safety rails (worktree isolation, protected paths,
+# diff ceilings, draft PRs), not a new risk beyond what codex already runs
+# under here.
+CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-bypassPermissions}"
 CLAUDE_NO_SESSION_PERSISTENCE="${CLAUDE_NO_SESSION_PERSISTENCE:-1}"
 # Defaults Claude phases to metered API billing rather than whatever
 # subscription auth happens to be in the calling shell's environment --
@@ -86,7 +99,7 @@ Environment overrides:
   MODE=exec
   CODEX_EPHEMERAL=1
   CODEX_SKIP_GIT_REPO_CHECK=0
-  CLAUDE_PERMISSION_MODE=default
+  CLAUDE_PERMISSION_MODE=bypassPermissions
   CLAUDE_NO_SESSION_PERSISTENCE=1
   S2C_CLAUDE_API_KEY_FILE=~/.config/e3d-pilot/anthropic-api-key
     (sourced into ANTHROPIC_API_KEY before a Claude phase, only if
