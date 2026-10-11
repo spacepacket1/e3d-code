@@ -272,7 +272,7 @@ MODE=exec
 CODEX_EPHEMERAL=1
 CODEX_SKIP_GIT_REPO_CHECK=0
 CODEX_NETWORK_ACCESS=0
-CLAUDE_PERMISSION_MODE=default
+CLAUDE_PERMISSION_MODE=bypassPermissions
 CLAUDE_NO_SESSION_PERSISTENCE=1
 ADD_DIRS="/path/to/extra/repo /path/to/output"
 DEFAULT_MODEL=<provider default>
@@ -295,7 +295,7 @@ COMMON_READ_FILES="package.json pipeline.js server.js"
 - `CODEX_EPHEMERAL`: set to `0` to let Codex persist phase sessions; default `1` avoids stale session persistence during runner-managed phase runs
 - `CODEX_SKIP_GIT_REPO_CHECK`: set to `1` to pass `--skip-git-repo-check` to `codex exec`
 - `CODEX_NETWORK_ACCESS`: set to `1` to pass `-c sandbox_workspace_write.network_access=true` to `codex exec`, enabling outbound network and inbound socket binds inside the `workspace-write` sandbox; default `0` keeps Codex's own network-disabled default. Needed for phases whose verification binds a listening socket (e.g. a local web-server test) — without it, `codex exec`'s sandbox denies the bind with `EPERM`.
-- `CLAUDE_PERMISSION_MODE`: passed to `claude --permission-mode`
+- `CLAUDE_PERMISSION_MODE`: passed to `claude --permission-mode`; defaults to `bypassPermissions` because `--print` has no TTY to answer an interactive approval prompt — `default` mode silently denies every Write/Edit/Bash call while the phase still exits 0 with nothing changed (confirmed directly against `claude` 2.1.296). This mirrors Codex's own unattended default above (`APPROVAL_POLICY=on-request` inside `workspace-write`); s2c's external safety rails (worktree isolation, `protected_paths`, diff ceilings, draft PRs) are the real guard for both providers, not per-call prompts that can't fire headless anyway.
 - `CLAUDE_NO_SESSION_PERSISTENCE`: set to `0` to let Claude persist phase sessions
 - `S2C_CLAUDE_API_KEY_FILE` (default `~/.config/e3d-pilot/anthropic-api-key`): a shell snippet (`export ANTHROPIC_API_KEY="..."`) sourced before a Claude phase, but only if `ANTHROPIC_API_KEY` isn't already set in the environment. Defaults unattended Claude phases to metered API billing instead of whatever interactive subscription auth the calling shell happens to have — set `ANTHROPIC_API_KEY` yourself beforehand to use something else.
 - `ADD_DIRS`: space-separated directories to pass as repeated `--add-dir` flags to the selected provider
