@@ -291,6 +291,8 @@ MODEL_OVERRIDES="4:gpt-5.5,14:claude:sonnet"
 AUTO_ROUTE_TIER=0
 AUTO_ROUTE_CACHE_FILE=/path/to/repo/.spec2code/route-cache.tsv
 COMMON_READ_FILES="package.json pipeline.js server.js"
+MAX_PHASES_PER_RUN=8
+MAX_PROVIDER_TOKENS_PER_PHASE=120000
 ```
 
 - `STATE_DIR`, `CONTEXT_FILE`, `MANIFEST_FILE`, `SUMMARY_DIR`: runtime-state paths under `.spec2code/`
@@ -315,6 +317,8 @@ COMMON_READ_FILES="package.json pipeline.js server.js"
 - `AUTO_ROUTE_TIER`: set to `1` (or pass `--auto-route`) to classify tier via a cheap model call instead of the keyword heuristic, for phases with no annotation/override — see Usage above
 - `AUTO_ROUTE_CACHE_FILE` (default `.spec2code/route-cache.tsv`): where `--auto-route` classification results are cached, keyed by `(provider, title, body)` digest
 - `COMMON_READ_FILES`: space-separated files to include in every phase prompt when present
+- `MAX_PHASES_PER_RUN` (default `8`): an `all` or bounded `--from`/`--to` run that would execute more phases than this fails preflight before any provider is launched, forcing a smaller batch; set to `0` to disable
+- `MAX_PROVIDER_TOKENS_PER_PHASE` (default `120000`): fails a phase after the fact if the provider reports using more tokens than this; set to `0` to disable
 
 By default, runner output stays high level: current phase, provider, model, status, issues, and verification. Pass `--verbose` when you need full generated prompts or detailed provider output.
 
@@ -328,6 +332,8 @@ When a phase has one or more `runner:verify` annotations, the commands run in de
 Run only trusted specs: verification annotations are shell commands executed from `ROOT_DIR`.
 
 ## Safety Notes
+
+Two runner-enforced ceilings bound a run independent of what the spec or provider do: `MAX_PHASES_PER_RUN` caps how many phases a single `all`/bounded invocation can select, and `MAX_PROVIDER_TOKENS_PER_PHASE` fails a phase that reports using more tokens than expected. Both default on; see Configuration above.
 
 The generated prompt tells the provider to:
 
