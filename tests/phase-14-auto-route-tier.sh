@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/spec2code"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec2code-phase14.XXXXXX")"
+RUNNER="${REPO_DIR}/bin/e3d-code"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/e3d-code-phase14.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 bash -n "$RUNNER"
@@ -59,7 +59,7 @@ chmod +x "$fake_codex"
 out1="$(
   cd "$REPO_DIR" &&
   COMMON_READ_FILES="" ROOT_DIR="$root" CODEX_BIN="$fake_codex" FAKE_TIER=mini \
-    AUTO_ROUTE_CACHE_FILE="$root/.spec2code/route-cache.tsv" \
+    AUTO_ROUTE_CACHE_FILE="$root/.e3d-code/route-cache.tsv" \
     "$RUNNER" "$spec" --list --auto-route
 )"
 printf '%s\n' "$out1" | grep -F $'Phase 1\tcodex\tgpt-5.4-mini\tRename A Button Label' >/dev/null || {
@@ -90,7 +90,7 @@ calls_after_first="$(wc -l < "$trace" | tr -d ' ')"
 out2="$(
   cd "$REPO_DIR" &&
   COMMON_READ_FILES="" ROOT_DIR="$root" CODEX_BIN="$fake_codex" FAKE_TIER=high \
-    AUTO_ROUTE_CACHE_FILE="$root/.spec2code/route-cache.tsv" \
+    AUTO_ROUTE_CACHE_FILE="$root/.e3d-code/route-cache.tsv" \
     "$RUNNER" "$spec" --list --auto-route
 )"
 printf '%s\n' "$out2" | grep -F $'Phase 1\tcodex\tgpt-5.4-mini\tRename A Button Label' >/dev/null || {
@@ -127,7 +127,7 @@ mkdir -p "$root_fallback"
 out3="$(
   cd "$REPO_DIR" &&
   COMMON_READ_FILES="" ROOT_DIR="$root_fallback" CODEX_BIN="$fake_codex_bad" \
-    "$RUNNER" "$spec" --list --auto-route 2>/tmp/s2c-phase14-stderr.txt
+    "$RUNNER" "$spec" --list --auto-route 2>/tmp/e3d-code-phase14-stderr.txt
 )"
 # Phase 2's title/body hits phase_model_tier()'s own "concurrency"/"session"
 # keyword path -> "high" is the correct fallback result here.
@@ -136,7 +136,7 @@ printf '%s\n' "$out3" | grep -F $'Phase 2\tcodex\tgpt-5.5\tRework Session Token 
   printf '%s\n' "$out3" >&2
   exit 1
 }
-grep -q "falling back to keyword heuristic" /tmp/s2c-phase14-stderr.txt || {
+grep -q "falling back to keyword heuristic" /tmp/e3d-code-phase14-stderr.txt || {
   echo "expected a fallback warning on stderr" >&2
   exit 1
 }

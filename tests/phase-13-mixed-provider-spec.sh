@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/spec2code"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec2code-phase13.XXXXXX")"
+RUNNER="${REPO_DIR}/bin/e3d-code"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/e3d-code-phase13.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 bash -n "$RUNNER"
@@ -62,7 +62,7 @@ printf '%s\n' "$list_output" | grep -F $'Phase 2\tclaude\tsonnet\tClaude Phase' 
   cd "$REPO_DIR" &&
   COMMON_READ_FILES="" ROOT_DIR="$root" RUN_VERIFICATION=0 \
     CODEX_BIN="$fake_codex" CODEX_SKIP_GIT_REPO_CHECK=1 \
-    CLAUDE_BIN="$fake_claude" S2C_CLAUDE_API_KEY_FILE="$TMP_DIR/no-such-key-file" \
+    CLAUDE_BIN="$fake_claude" E3D_CODE_CLAUDE_API_KEY_FILE="$TMP_DIR/no-such-key-file" \
     "$RUNNER" "$spec" all
 ) >/dev/null
 

@@ -1,0 +1,1718 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.4.0"
+ROOT_DIR="${ROOT_DIR:-$(pwd)}"
+# State dir: .e3d-code, unless a repo still has the pre-rename .spec2code/ and no .e3d-code/ yet,
+# in which case keep using it so in-flight runs resume instead of restarting from phase 1.
+if [[ -z "${STATE_DIR:-}" ]]; then
+  if [[ -d "${ROOT_DIR}/.spec2code" && ! -d "${ROOT_DIR}/.e3d-code" ]]; then
+    STATE_DIR="${ROOT_DIR}/.spec2code"
+  else
+    STATE_DIR="${ROOT_DIR}/.e3d-code"
+  fi
+fi
+CONTEXT_FILE="${CONTEXT_FILE:-${STATE_DIR}/context.md}"
+MANIFEST_FILE="${MANIFEST_FILE:-${STATE_DIR}/manifest.tsv}"
+SUMMARY_DIR="${SUMMARY_DIR:-${STATE_DIR}/summaries}"
+PROVIDER="${PROVIDER:-codex}"
+CODEX_BIN="${CODEX_BIN:-codex}"
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-0}"
+USE_SHARED_CONTEXT="${USE_SHARED_CONTEXT:-1}"
+USE_PHASE_SUMMARIES="${USE_PHASE_SUMMARIES:-1}"
+SUMMARY_LOOKBACK="${SUMMARY_LOOKBACK:-3}"
+RUN_VERIFICATION="${RUN_VERIFICATION:-1}"
+VERIFY_SHELL="${VERIFY_SHELL:-bash}"
+SANDBOX_MODE="${SANDBOX_MODE:-workspace-write}"
+APPROVAL_POLICY="${APPROVAL_POLICY:-on-request}"
+MODE="${MODE:-exec}"
+CODEX_EPHEMERAL="${CODEX_EPHEMERAL:-1}"
+CODEX_SKIP_GIT_REPO_CHECK="${CODEX_SKIP_GIT_REPO_CHECK:-0}"
+CODEX_NETWORK_ACCESS="${CODEX_NETWORK_ACCESS:-0}"
+# "default" (Claude Code's own CLI default) requires interactive approval for
+# every Write/Edit/Bash tool call; there's no TTY in --print mode to answer
+# that prompt, so the call is silently denied and the phase still exits 0
+# with zero files changed. Confirmed directly against the real `claude`
+# binary (2.1.296) on 2026-10-11: `--permission-mode default` produced "I
+# couldn't create hello.txt... write permission hasn't been granted" with
+# exit 0 and no file written; `--permission-mode bypassPermissions` created
+# the file correctly. This mirrors how CODEX_... above already runs fully
+# unattended (APPROVAL_POLICY=on-request inside a workspace-write sandbox) --
+# bypassPermissions gives Claude the same effective autonomy within this
+# script's own external safety rails (worktree isolation, protected paths,
+# diff ceilings, draft PRs), not a new risk beyond what codex already runs
+# under here.
+CLAUDE_PERMISSION_MODE="${CLAUDE_PERMISSION_MODE:-bypassPermissions}"
+CLAUDE_NO_SESSION_PERSISTENCE="${CLAUDE_NO_SESSION_PERSISTENCE:-1}"
+# Defaults Claude phases to metered API billing rather than whatever
+# subscription auth happens to be in the calling shell's environment --
+# unattended runs shouldn't draw on a human's interactive subscription quota.
+# Set ANTHROPIC_API_KEY yourself before invoking this script to override.
+E3D_CODE_CLAUDE_API_KEY_FILE="${E3D_CODE_CLAUDE_API_KEY_FILE:-${S2C_CLAUDE_API_KEY_FILE:-$HOME/.config/e3d-pilot/anthropic-api-key}}"  # S2C_* = pre-rename name, still honored
+ADD_DIRS="${ADD_DIRS:-${CODEX_ADD_DIRS:-}}"
+DEFAULT_MODEL="${DEFAULT_MODEL:-}"
+HIGH_MODEL="${HIGH_MODEL:-}"
+MINI_MODEL="${MINI_MODEL:-}"
+MODEL_OVERRIDES="${MODEL_OVERRIDES:-}"
+COMMON_READ_FILES="${COMMON_READ_FILES:-package.json}"
+MAX_PHASES_PER_RUN="${MAX_PHASES_PER_RUN:-8}"
+MAX_PROVIDER_TOKENS_PER_PHASE="${MAX_PROVIDER_TOKENS_PER_PHASE:-120000}"
+CODEX_CONTEXT_WINDOW="${CODEX_CONTEXT_WINDOW:-128000}"
+CODEX_AUTO_COMPACT_TOKEN_LIMIT="${CODEX_AUTO_COMPACT_TOKEN_LIMIT:-96000}"
+# When enabled (--auto-route), a phase with no explicit runner:model annotation
+# and no MODEL_OVERRIDES entry is classified by a cheap model call (the
+# executing provider's own mini tier) instead of the static keyword grep in
+# phase_model_tier(). An explicit annotation or override still always wins --
+# this only replaces the keyword-heuristic fallback slot. Results are cached
+# by (provider, title, body) digest so an unchanged phase is never
+# reclassified on a later run.
+AUTO_ROUTE_TIER="${AUTO_ROUTE_TIER:-0}"
+AUTO_ROUTE_CACHE_FILE="${AUTO_ROUTE_CACHE_FILE:-${STATE_DIR}/route-cache.tsv}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  e3d-code <spec.md> <all|phase-number> [options]
+
+Options:
+  --from <n>           Start phase for "all"
+  --to <n>             End phase for "all"
+  --provider <name>    Provider to run: codex or claude
+  --preflight          Run input/environment checks and exit
+  --prepare-context    Write shared repo context and exit
+  --refresh-context    Regenerate shared repo context before running phases
+  --dry-run            Show selected phase status instead of running the provider
+  --verbose            Print full generated prompts and allow detailed provider output
+  --list               List detected phases with provider and model
+  --auto-route         For phases with no runner:model annotation and no
+                       MODEL_OVERRIDES entry, classify the tier (mini/default/
+                       high) with one cheap model call instead of the static
+                       keyword heuristic; cached by phase content digest
+  --read <path>        Add a file to the "Start by reading" list; repeatable
+  --version            Print the runner version
+  -h, --help           Show this help
+
+Examples:
+  e3d-code docs/feature-ticket.md --list
+  e3d-code docs/feature-ticket.md 3 --dry-run
+  e3d-code docs/feature-ticket.md all --from 4 --to 8
+  e3d-code docs/feature-ticket.md 3 --provider claude
+  MODEL_OVERRIDES="4:gpt-5.5,7:claude:sonnet" e3d-code docs/feature-ticket.md all
+
+Environment overrides:
+  ROOT_DIR=/path/to/repo
+  STATE_DIR=/path/to/repo/.e3d-code
+  CONTEXT_FILE=/path/to/repo/.e3d-code/context.md
+  MANIFEST_FILE=/path/to/repo/.e3d-code/manifest.tsv
+  SUMMARY_DIR=/path/to/repo/.e3d-code/summaries
+  PROVIDER=codex
+  CODEX_BIN=codex
+  CLAUDE_BIN=claude
+  SKIP_PREFLIGHT=0
+  USE_SHARED_CONTEXT=1
+  USE_PHASE_SUMMARIES=1
+  SUMMARY_LOOKBACK=3
+  RUN_VERIFICATION=1
+  VERIFY_SHELL=bash
+  SANDBOX_MODE=workspace-write
+  APPROVAL_POLICY=on-request
+  MODE=exec
+  CODEX_EPHEMERAL=1
+  CODEX_SKIP_GIT_REPO_CHECK=0
+  CLAUDE_PERMISSION_MODE=bypassPermissions
+  CLAUDE_NO_SESSION_PERSISTENCE=1
+  E3D_CODE_CLAUDE_API_KEY_FILE=~/.config/e3d-pilot/anthropic-api-key
+    (sourced into ANTHROPIC_API_KEY before a Claude phase, only if
+    ANTHROPIC_API_KEY isn't already set -- defaults Claude phases to
+    metered billing instead of the calling shell's subscription auth)
+  ADD_DIRS="/path/to/extra/repo /path/to/output"
+  DEFAULT_MODEL=<provider default>
+  HIGH_MODEL=<provider high>
+  MINI_MODEL=<provider mini>
+  MODEL_OVERRIDES="phase:model,phase:provider:model"
+  COMMON_READ_FILES="package.json pipeline.js server.js"
+  MAX_PHASES_PER_RUN=8
+  MAX_PROVIDER_TOKENS_PER_PHASE=120000
+  CODEX_CONTEXT_WINDOW=128000
+  CODEX_AUTO_COMPACT_TOKEN_LIMIT=96000
+
+Expected spec format:
+  Markdown headings containing a phase number, for example:
+    ## Phase 1 — Historical Replay
+    ## 6. Phase 2 - Walk-Forward Validation
+
+Notes:
+  - Each phase starts a fresh non-interactive provider session.
+  - "all" runs detected phases in numeric order, optionally bounded by --from/--to.
+  - Model selection considers phase role and complexity; use annotations or MODEL_OVERRIDES for exact routing.
+  - Non-dry runs execute phase verification annotations, or conservative inferred checks when none are provided.
+USAGE
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "warning: $*" >&2
+}
+
+provider_bin() {
+  local provider="${1:-$PROVIDER}"
+  case "$provider" in
+    codex) printf '%s\n' "$CODEX_BIN" ;;
+    claude) printf '%s\n' "$CLAUDE_BIN" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+}
+
+provider_display_name() {
+  local provider="${1:-$PROVIDER}"
+  case "$provider" in
+    codex) printf '%s\n' "Codex" ;;
+    claude) printf '%s\n' "Claude" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+}
+
+provider_default_model() {
+  local provider="${1:-$PROVIDER}"
+  case "$provider" in
+    codex) printf '%s\n' "${DEFAULT_MODEL:-gpt-5.4}" ;;
+    claude) printf '%s\n' "${DEFAULT_MODEL:-sonnet}" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+}
+
+provider_high_model() {
+  local provider="${1:-$PROVIDER}"
+  case "$provider" in
+    codex) printf '%s\n' "${HIGH_MODEL:-gpt-5.5}" ;;
+    claude) printf '%s\n' "${HIGH_MODEL:-opus}" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+}
+
+provider_mini_model() {
+  local provider="${1:-$PROVIDER}"
+  case "$provider" in
+    codex) printf '%s\n' "${MINI_MODEL:-gpt-5.4-mini}" ;;
+    claude) printf '%s\n' "${MINI_MODEL:-haiku}" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+}
+
+ensure_state_dir() {
+  [[ -d "$STATE_DIR" ]] && return 0
+  mkdir -p "$STATE_DIR" || die "failed to create state directory: $STATE_DIR"
+}
+
+require_spec() {
+  [[ -f "$SPEC_FILE" ]] || die "spec file not found: $SPEC_FILE"
+}
+
+root_dir_exists() {
+  [[ -d "$ROOT_DIR" ]]
+}
+
+PHASE_METADATA=()
+PHASE_ORDER=()
+PHASE_LINES=()
+PHASE_TITLES=()
+
+load_phase_metadata() {
+  local line phase_number phase_line phase_title
+  local metadata_file
+
+  PHASE_METADATA=()
+  metadata_file="$(mktemp "${TMPDIR:-/tmp}/e3d-code.phases.XXXXXX")" || die "failed to create temp file"
+
+  if ! awk '
+    /^#{1,6}[[:space:]]+.*[Pp]hase[[:space:]]+[0-9]+/ {
+      line = $0
+      if (match(line, /[Pp]hase[[:space:]]+([0-9]+)/)) {
+        rest = substr(line, RSTART, RLENGTH)
+        gsub(/[^0-9]/, "", rest)
+        phase = rest
+        title = line
+        sub(/^#{1,6}[[:space:]]+/, "", title)
+        sub(/^[0-9]+[.][[:space:]]+/, "", title)
+        sub(/^[Pp]hase[[:space:]]+[0-9]+[[:space:]]*[-—:]*[[:space:]]*/, "", title)
+        print phase "\t" NR "\t" title
+      }
+    }
+  ' "$SPEC_FILE" | sort -n -k1,1 -k2,2 | awk -F '\t' '
+    {
+      if ($1 == previous_phase) {
+        printf "error: duplicate phase number in spec: %s\n", $1 > "/dev/stderr"
+        exit 1
+      }
+      previous_phase = $1
+      print
+    }
+  ' > "$metadata_file"; then
+    rm -f "$metadata_file"
+    exit 1
+  fi
+
+  while IFS= read -r line; do
+    PHASE_METADATA+=("$line")
+  done < "$metadata_file"
+  rm -f "$metadata_file"
+
+  PHASE_ORDER=()
+  PHASE_LINES=()
+  PHASE_TITLES=()
+
+  for line in "${PHASE_METADATA[@]}"; do
+    IFS=$'\t' read -r phase_number phase_line phase_title <<< "$line"
+    PHASE_ORDER+=("$phase_number")
+    PHASE_LINES+=("$phase_line")
+    PHASE_TITLES+=("$phase_title")
+  done
+}
+
+phase_title() {
+  local phase="$1"
+  local index
+  for index in "${!PHASE_ORDER[@]}"; do
+    if [[ "${PHASE_ORDER[$index]}" == "$phase" ]]; then
+      printf '%s\n' "${PHASE_TITLES[$index]}"
+      return 0
+    fi
+  done
+}
+
+phase_exists() {
+  local phase="$1"
+  [[ -n "$(phase_title "$phase")" ]]
+}
+
+resolve_read_path() {
+  local path="$1"
+  if [[ "$path" = /* ]]; then
+    printf '%s\n' "$path"
+  else
+    printf '%s\n' "${ROOT_DIR}/${path}"
+  fi
+}
+
+shared_context_enabled() {
+  [[ "$USE_SHARED_CONTEXT" == "1" ]]
+}
+
+include_context_file() {
+  shared_context_enabled && [[ -f "$CONTEXT_FILE" ]]
+}
+
+phase_summaries_enabled() {
+  [[ "$USE_PHASE_SUMMARIES" == "1" ]]
+}
+
+summary_lookback() {
+  if [[ "$SUMMARY_LOOKBACK" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$SUMMARY_LOOKBACK"
+  else
+    printf '%s\n' "3"
+  fi
+}
+
+manifest_field() {
+  printf '%s' "$1" | tr '\t\r\n' '   '
+}
+
+write_manifest_row() {
+  local timestamp="$1"
+  local phase="$2"
+  local title="$3"
+  local provider_name="$4"
+  local model="$5"
+  local dry_run="$6"
+  local exit_status="$7"
+
+  if [[ ! -d "$STATE_DIR" ]] && ! mkdir -p "$STATE_DIR"; then
+    warn "failed to prepare state directory for manifest: $STATE_DIR"
+    return 1
+  fi
+
+  if ! printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(manifest_field "$timestamp")" \
+    "$(manifest_field "$SPEC_FILE")" \
+    "$(manifest_field "$phase")" \
+    "$(manifest_field "$title")" \
+    "$(manifest_field "$provider_name")" \
+    "$(manifest_field "$model")" \
+    "$(manifest_field "$MODE")" \
+    "$(manifest_field "$dry_run")" \
+    "$(manifest_field "$exit_status")" >> "$MANIFEST_FILE"; then
+    warn "failed to append manifest row: $MANIFEST_FILE"
+    return 1
+  fi
+}
+
+summary_file() {
+  local phase="$1"
+  printf '%s/phase-%s.md\n' "$SUMMARY_DIR" "$phase"
+}
+
+summary_indicates_success() {
+  local summary_file_path="$1"
+  [[ -f "$summary_file_path" ]] || return 1
+  grep -Eq '^-[[:space:]]+Exit status:[[:space:]]+0$' "$summary_file_path"
+}
+
+previous_summary_files() {
+  local phase="$1"
+  local index current_index="" lookback_count found=0 prior_phase prior_summary
+  local files=()
+
+  phase_summaries_enabled || return 0
+
+  lookback_count="$(summary_lookback)"
+  (( lookback_count > 0 )) || return 0
+
+  for index in "${!PHASE_ORDER[@]}"; do
+    if [[ "${PHASE_ORDER[$index]}" == "$phase" ]]; then
+      current_index="$index"
+      break
+    fi
+  done
+
+  [[ -n "$current_index" ]] || return 0
+
+  for (( index = current_index - 1; index >= 0 && found < lookback_count; index-- )); do
+    prior_phase="${PHASE_ORDER[$index]}"
+    prior_summary="$(summary_file "$prior_phase")"
+    if summary_indicates_success "$prior_summary"; then
+      files+=("$prior_summary")
+      found=$((found + 1))
+    fi
+  done
+
+  if (( ${#files[@]} == 0 )); then
+    return 0
+  fi
+
+  for (( index = ${#files[@]} - 1; index >= 0; index-- )); do
+    printf '%s\n' "${files[$index]}"
+  done
+}
+
+write_phase_summary() {
+  local timestamp="$1"
+  local phase="$2"
+  local title="$3"
+  local provider_name="$4"
+  local model="$5"
+  local exit_status="$6"
+  local summary_file_path preserved_notes
+
+  summary_file_path="$(summary_file "$phase")"
+
+  if [[ ! -d "$SUMMARY_DIR" ]] && ! mkdir -p "$SUMMARY_DIR"; then
+    warn "failed to prepare summary directory: $SUMMARY_DIR"
+    return 1
+  fi
+
+  preserved_notes="$(awk '
+    /^## Implementation Handoff$/ { found = 1 }
+    found && (/^## Verification$/ || /^## Worktree Snapshot$/) { exit }
+    found { print }
+  ' "$summary_file_path" 2>/dev/null || true)"
+
+  if ! {
+    echo "# Phase ${phase} Summary"
+    echo
+    echo "- Phase: ${phase}"
+    echo "- Title: ${title}"
+    echo "- Provider: ${provider_name}"
+    echo "- Model: ${model}"
+    echo "- Completed: ${timestamp}"
+    echo "- Exit status: ${exit_status}"
+    echo
+    if [[ -n "$preserved_notes" ]]; then
+      printf '%s\n' "$preserved_notes"
+    else
+      echo "## Implementation Handoff"
+      echo
+      echo "- No provider-authored handoff was recorded."
+    fi
+    echo
+    echo "## Verification"
+    printf '%s\n' "${LAST_VERIFICATION_REPORT:-- Not run.}"
+    echo
+    echo "## Worktree Snapshot"
+    git_worktree_snapshot
+  } > "$summary_file_path"; then
+    warn "failed to write phase summary: $summary_file_path"
+    return 1
+  fi
+}
+
+git_worktree_snapshot() {
+  local output
+  if ! git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '%s\n' "- not a git repository"
+    return 0
+  fi
+
+  output="$(git -C "$ROOT_DIR" status --short 2>/dev/null || true)"
+  if [[ -z "$output" ]]; then
+    printf '%s\n' "- clean"
+    return 0
+  fi
+  printf '%s\n' "$output" | awk 'NR <= 40 { print "- `" $0 "`" } NR == 41 { print "- ..."; exit }'
+}
+
+git_branch() {
+  git -C "$ROOT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true
+}
+
+git_status_summary() {
+  if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local output
+    output="$(git -C "$ROOT_DIR" status --short 2>/dev/null || true)"
+    if [[ -z "$output" ]]; then
+      printf '%s\n' "- clean"
+      return 0
+    fi
+
+    printf '%s\n' "$output" | awk '
+      NR <= 20 { print "- " $0 }
+      NR == 21 { print "- ..."; exit }
+    '
+  else
+    printf '%s\n' "- not a git repository"
+  fi
+}
+
+top_level_layout() {
+  local output
+  output="$(find "$ROOT_DIR" -mindepth 1 -maxdepth 1 -print 2>/dev/null \
+    | sed "s#^$ROOT_DIR/##" \
+    | sort || true)"
+
+  if [[ -z "$output" ]]; then
+    printf '%s\n' "- empty"
+    return 0
+  fi
+
+  printf '%s\n' "$output" | awk '
+      NR <= 40 { print "- " $0 }
+      NR == 41 { print "- ..."; exit }
+    '
+}
+
+detected_package_files() {
+  local output
+  output="$(find "$ROOT_DIR" -maxdepth 2 \( \
+    -name 'package.json' -o \
+    -name 'package-lock.json' -o \
+    -name 'pnpm-lock.yaml' -o \
+    -name 'yarn.lock' -o \
+    -name 'bun.lockb' -o \
+    -name 'tsconfig.json' -o \
+    -name 'vitest.config.*' -o \
+    -name 'jest.config.*' -o \
+    -name 'eslint.config.*' -o \
+    -name '.eslintrc*' -o \
+    -name 'prettier.config.*' -o \
+    -name '.prettierrc*' -o \
+    -name 'pyproject.toml' -o \
+    -name 'requirements*.txt' -o \
+    -name 'pytest.ini' -o \
+    -name 'tox.ini' -o \
+    -name 'go.mod' -o \
+    -name 'Cargo.toml' -o \
+    -name 'Makefile' -o \
+    -name 'Dockerfile' -o \
+    -name 'docker-compose*.yml' -o \
+    -name 'docker-compose*.yaml' -o \
+    -name 'compose.yml' -o \
+    -name 'compose.yaml' -o \
+    -name '.tool-versions' -o \
+    -name '.nvmrc' -o \
+    -name 'Gemfile' \
+  \) -print 2>/dev/null \
+    | sed "s#^$ROOT_DIR/##" \
+    | sort || true)"
+
+  if [[ -z "$output" ]]; then
+    printf '%s\n' "- none detected"
+    return 0
+  fi
+
+  printf '%s\n' "$output" | awk '
+      NR <= 40 { print "- " $0 }
+      NR == 41 { print "- ..."; exit }
+    '
+}
+
+likely_verification_commands() {
+  local commands=()
+  local command
+
+  if [[ -f "$ROOT_DIR/package.json" ]]; then
+    commands+=("npm test")
+  fi
+  if [[ -f "$ROOT_DIR/pnpm-lock.yaml" ]]; then
+    commands+=("pnpm test")
+  fi
+  if [[ -f "$ROOT_DIR/yarn.lock" ]]; then
+    commands+=("yarn test")
+  fi
+  if [[ -f "$ROOT_DIR/pyproject.toml" || -f "$ROOT_DIR/pytest.ini" || -f "$ROOT_DIR/tox.ini" ]]; then
+    commands+=("pytest")
+  fi
+  if [[ -f "$ROOT_DIR/go.mod" ]]; then
+    commands+=("go test ./...")
+  fi
+  if [[ -f "$ROOT_DIR/Cargo.toml" ]]; then
+    commands+=("cargo test")
+  fi
+  if [[ -f "$ROOT_DIR/Makefile" ]]; then
+    commands+=("make test")
+  fi
+  if [[ -f "$ROOT_DIR/bin/e3d-code" ]]; then
+    commands+=("bash -n bin/e3d-code")
+  fi
+
+  if [[ ${#commands[@]} -eq 0 ]]; then
+    printf '%s\n' "- none inferred"
+    return 0
+  fi
+
+  for command in "${commands[@]}"; do
+    printf '%s\n' "- $command"
+  done
+}
+
+common_read_files_summary() {
+  local files=()
+  local file resolved_path
+
+  # shellcheck disable=SC2206
+  files=($COMMON_READ_FILES)
+  if [[ ${#files[@]} -eq 0 ]]; then
+    printf '%s\n' "- none configured"
+    return 0
+  fi
+
+  for file in "${files[@]}"; do
+    [[ -n "$file" ]] || continue
+    resolved_path="$(resolve_read_path "$file")"
+    if [[ -e "$resolved_path" ]]; then
+      printf '%s\n' "- $file (present)"
+    else
+      printf '%s\n' "- $file (missing)"
+    fi
+  done
+}
+
+write_shared_context() {
+  local timestamp branch
+
+  ensure_state_dir
+  timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  branch="$(git_branch)"
+
+  {
+    echo "# Shared Repo Context"
+    echo
+    echo "- Timestamp: ${timestamp}"
+    echo "- Root directory: ${ROOT_DIR}"
+    if [[ -n "$branch" ]]; then
+      echo "- Git branch: ${branch}"
+    else
+      echo "- Git branch: unavailable"
+    fi
+    echo
+    echo "## Git Status Summary"
+    git_status_summary
+    echo
+    echo "## Top-Level Layout"
+    top_level_layout
+    echo
+    echo "## Detected Package and Config Files"
+    detected_package_files || true
+    echo
+    echo "## Likely Verification Commands"
+    likely_verification_commands
+    echo
+    echo "## Common Read Files"
+    common_read_files_summary
+  } > "$CONTEXT_FILE" || die "failed to write context file: $CONTEXT_FILE"
+}
+
+first_phase() {
+  [[ ${#PHASE_ORDER[@]} -gt 0 ]] && printf '%s\n' "${PHASE_ORDER[0]}"
+}
+
+last_phase() {
+  local last_index
+  last_index=$(( ${#PHASE_ORDER[@]} - 1 ))
+  [[ $last_index -ge 0 ]] && printf '%s\n' "${PHASE_ORDER[$last_index]}"
+}
+
+phase_start_line() {
+  local phase="$1"
+  local index
+  for index in "${!PHASE_ORDER[@]}"; do
+    if [[ "${PHASE_ORDER[$index]}" == "$phase" ]]; then
+      printf '%s\n' "${PHASE_LINES[$index]}"
+      return 0
+    fi
+  done
+}
+
+phase_end_line() {
+  local phase="$1"
+  local index next_index
+  for index in "${!PHASE_ORDER[@]}"; do
+    if [[ "${PHASE_ORDER[$index]}" == "$phase" ]]; then
+      next_index=$(( index + 1 ))
+      if (( next_index < ${#PHASE_ORDER[@]} )); then
+        printf '%s\n' "${PHASE_LINES[$next_index]}"
+      fi
+      return 0
+    fi
+  done
+
+  return 0
+}
+
+extract_phase_body() {
+  local phase="$1"
+  local start_line end_line
+  start_line="$(phase_start_line "$phase")"
+  [[ -n "$start_line" ]] || return 1
+  end_line="$(phase_end_line "$phase")"
+
+  awk -v start_line="$start_line" -v end_line="${end_line:-0}" '
+    NR < start_line { next }
+    end_line > 0 && NR >= end_line { exit }
+    { print }
+  ' "$SPEC_FILE"
+}
+
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+phase_annotations() {
+  local phase="$1"
+  local line source key value trimmed_line
+
+  while IFS= read -r line; do
+    trimmed_line="$(trim_whitespace "$line")"
+    if [[ "$trimmed_line" =~ ^\<\!--[[:space:]]*(codex|claude|runner):([[:alnum:]_-]+)=(.*)--\>$ ]]; then
+      source="${BASH_REMATCH[1]}"
+      key="${BASH_REMATCH[2]}"
+      value="$(trim_whitespace "${BASH_REMATCH[3]}")"
+      [[ -n "$value" ]] || continue
+      printf '%s\t%s\t%s\n' "$source" "$key" "$value"
+    fi
+  done < <(extract_phase_body "$phase")
+}
+
+resolve_model_value() {
+  local value="$1"
+  local provider="${2:-$PROVIDER}"
+  case "$value" in
+    high) provider_high_model "$provider" ;;
+    default) provider_default_model "$provider" ;;
+    mini) provider_mini_model "$provider" ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+parse_execution_target() {
+  local value="$1"
+  local fallback_provider="${2:-$PROVIDER}"
+  local provider model
+
+  case "$value" in
+    codex:*|claude:*)
+      provider="${value%%:*}"
+      model="${value#*:}"
+      ;;
+    *)
+      provider="$fallback_provider"
+      model="$value"
+      ;;
+  esac
+
+  case "$provider" in
+    codex|claude)
+      ;;
+    *)
+      die "unsupported provider in execution target: $provider"
+      ;;
+  esac
+
+  printf '%s\t%s\n' "$provider" "$(resolve_model_value "$model" "$provider")"
+}
+
+annotation_execution_target() {
+  local phase="$1"
+  local default_provider="${2:-$PROVIDER}"
+  local source key value selected=""
+  local selected_provider="$default_provider"
+
+  while IFS=$'\t' read -r source key value; do
+    if [[ "$key" == "model" && ( "$source" == "runner" || "$source" == "$default_provider" ) ]]; then
+      IFS=$'\t' read -r selected_provider selected <<< "$(parse_execution_target "$value" "$default_provider")"
+    fi
+  done < <(phase_annotations "$phase")
+
+  [[ -n "$selected" ]] || return 1
+  printf '%s\t%s\n' "$selected_provider" "$selected"
+}
+
+annotation_read_files() {
+  local phase="$1"
+  local source key value
+
+  while IFS=$'\t' read -r source key value; do
+    if [[ "$key" == "read" ]]; then
+      printf '%s\n' "$value"
+    fi
+  done < <(phase_annotations "$phase")
+}
+
+verification_hints_block() {
+  local phase="$1"
+  local source key value found="0"
+
+  while IFS=$'\t' read -r source key value; do
+    if [[ "$key" == "verify" ]]; then
+      if [[ "$found" == "0" ]]; then
+        echo "Verification hints:"
+        found="1"
+      fi
+      echo "- $value"
+    fi
+  done < <(phase_annotations "$phase")
+}
+
+annotation_verification_commands() {
+  local phase="$1"
+  local source key value
+
+  while IFS=$'\t' read -r source key value; do
+    if [[ "$key" == "verify" ]]; then
+      printf '%s\n' "$value"
+    fi
+  done < <(phase_annotations "$phase")
+}
+
+inferred_verification_commands() {
+  if [[ -f "$ROOT_DIR/package.json" ]] && grep -Eq '"test"[[:space:]]*:' "$ROOT_DIR/package.json"; then
+    if [[ -f "$ROOT_DIR/pnpm-lock.yaml" ]]; then
+      printf '%s\n' "pnpm test"
+    elif [[ -f "$ROOT_DIR/yarn.lock" ]]; then
+      printf '%s\n' "yarn test"
+    else
+      printf '%s\n' "npm test"
+    fi
+  elif [[ -f "$ROOT_DIR/pyproject.toml" || -f "$ROOT_DIR/pytest.ini" || -f "$ROOT_DIR/tox.ini" ]]; then
+    printf '%s\n' "pytest"
+  elif [[ -f "$ROOT_DIR/go.mod" ]]; then
+    printf '%s\n' "go test ./..."
+  elif [[ -f "$ROOT_DIR/Cargo.toml" ]]; then
+    printf '%s\n' "cargo test"
+  elif [[ -f "$ROOT_DIR/Makefile" ]]; then
+    printf '%s\n' "make test"
+  elif [[ -d "$ROOT_DIR/tests" ]] && find "$ROOT_DIR/tests" -maxdepth 1 -type f -name '*.sh' -print -quit 2>/dev/null | grep -q .; then
+    printf '%s\n' 'for test_file in tests/*.sh; do bash "$test_file"; done'
+  elif [[ -f "$ROOT_DIR/bin/e3d-code" ]]; then
+    printf '%s\n' "bash -n bin/e3d-code"
+  fi
+}
+
+phase_verification_commands() {
+  local phase="$1"
+  local annotated
+  annotated="$(annotation_verification_commands "$phase")"
+  if [[ -n "$annotated" ]]; then
+    printf '%s\n' "$annotated"
+  else
+    inferred_verification_commands
+  fi
+}
+
+run_phase_verification() {
+  local phase="$1"
+  local command found=0 status=0
+  local report=""
+
+  if [[ "$RUN_VERIFICATION" != "1" ]]; then
+    LAST_VERIFICATION_REPORT="- Skipped because RUN_VERIFICATION=${RUN_VERIFICATION}."
+    echo "Verification: skipped."
+    return 0
+  fi
+
+  while IFS= read -r command; do
+    [[ -n "$command" ]] || continue
+    found=1
+    echo "Verification: running ${command}"
+    if (cd "$ROOT_DIR" && "$VERIFY_SHELL" -lc "$command"); then
+      report="${report}- passed: \`${command}\`"$'\n'
+    else
+      status=$?
+      report="${report}- failed (${status}): \`${command}\`"$'\n'
+      break
+    fi
+  done < <(phase_verification_commands "$phase")
+
+  if [[ "$found" == "0" ]]; then
+    LAST_VERIFICATION_REPORT="- No verification command was annotated or inferred."
+    echo "Verification: no command available."
+    return 0
+  fi
+
+  LAST_VERIFICATION_REPORT="${report%$'\n'}"
+  return "$status"
+}
+
+override_execution_target() {
+  local phase="$1"
+  local default_provider="${2:-$PROVIDER}"
+  local item key value
+  [[ -n "$MODEL_OVERRIDES" ]] || return 1
+  local items=()
+  IFS=',' read -r -a items <<< "$MODEL_OVERRIDES"
+  for item in "${items[@]}"; do
+    key="${item%%:*}"
+    value="${item#*:}"
+    if [[ "$key" == "$phase" && -n "$value" && "$value" != "$item" ]]; then
+      parse_execution_target "$value" "$default_provider"
+      return 0
+    fi
+  done
+  return 1
+}
+
+phase_model_tier() {
+  local phase="$1"
+  local title body lower title_lower
+
+  title="$(phase_title "$phase")"
+  title_lower="$(printf '%s\n' "$title" | tr '[:upper:]' '[:lower:]')"
+  body="$(extract_phase_body "$phase")"
+  lower="$(printf '%s\n%s\n' "$title" "$body" | tr '[:upper:]' '[:lower:]')"
+
+  if grep -Eq 'architecture|security|threat|migration|data integrity|custody|wallet|key-management|liquidity|routing|mev|gas|reconciliation|accounting|tax|compliance|permission|audit|review|final verification|release' <<< "$title_lower"; then
+    echo "high"
+  elif grep -Eq 'dashboard|operations|monitoring|alerts|incidents|analytics|data quality|risk engine|token.*scanner|execution simulation|historical|backtesting|walk-forward|promotion' <<< "$title_lower"; then
+    echo "default"
+  elif grep -Eq 'private key|key-management|live routing|cancel/replace|cancel and replace|mev|gas-aware|tax-lot|reconciliation|compliance|operator permission|breaking change|cross[- ]module|concurrency|race condition|schema migration' <<< "$lower"; then
+    echo "high"
+  elif grep -Eq 'small ui|minor ui|simple api|copy change|documentation only|docs only|readme only|changelog only' <<< "$lower"; then
+    echo "mini"
+  else
+    echo "default"
+  fi
+}
+
+phase_tier_cache_key() {
+  local provider="$1" title="$2" body="$3"
+  printf '%s\x1e%s\x1e%s' "$provider" "$title" "$body" | shasum -a 256 | awk '{print $1}'
+}
+
+phase_tier_cache_lookup() {
+  local key="$1"
+  [[ -f "$AUTO_ROUTE_CACHE_FILE" ]] || return 1
+  awk -F'\t' -v k="$key" '$1==k{v=$2} END{if(v){print v; exit 0} exit 1}' "$AUTO_ROUTE_CACHE_FILE"
+}
+
+phase_tier_cache_store() {
+  local key="$1" tier="$2"
+  mkdir -p "$(dirname "$AUTO_ROUTE_CACHE_FILE")"
+  printf '%s\t%s\n' "$key" "$tier" >> "$AUTO_ROUTE_CACHE_FILE"
+}
+
+# Classifies a phase's required model tier with a single cheap (mini-tier)
+# call to the provider that will actually execute it, instead of the static
+# keyword grep in phase_model_tier(). Only invoked from phase_execution_target
+# when AUTO_ROUTE_TIER=1 and neither an explicit annotation nor
+# MODEL_OVERRIDES already decided the phase -- see phase_execution_target.
+# Falls back to the keyword heuristic (never dies) on any classification
+# failure: missing binary, network error, or a malformed/missing answer.
+classify_phase_tier_llm() {
+  local phase="$1" provider="$2"
+  local title body key cached raw tier model
+
+  title="$(phase_title "$phase")"
+  body="$(extract_phase_body "$phase")"
+  key="$(phase_tier_cache_key "$provider" "$title" "$body")"
+
+  if cached="$(phase_tier_cache_lookup "$key")"; then
+    printf '%s\n' "$cached"
+    return 0
+  fi
+
+  model="$(provider_mini_model "$provider")"
+  local prompt
+  prompt="$(cat <<PROMPT
+Classify the required model capability tier for this software implementation phase. Reply with exactly one word: mini, default, or high.
+
+- high: architecture-level design, security, concurrency/race conditions, financial/custody/compliance logic, data migrations, irreversible/high-risk changes.
+- mini: routine, low-risk work -- simple CRUD, copy/docs changes, small UI tweaks, boilerplate.
+- default: everything else.
+
+Phase title: ${title}
+
+Phase body:
+${body}
+PROMPT
+)"
+
+  case "$provider" in
+    codex)
+      local out_tmp
+      out_tmp="$(mktemp "${TMPDIR:-/tmp}/e3d-code-route.XXXXXX")"
+      printf '%s' "$prompt" | "$CODEX_BIN" exec --model "$model" --sandbox read-only \
+        --skip-git-repo-check --cd "$ROOT_DIR" --output-last-message "$out_tmp" - >/dev/null 2>&1
+      raw="$(cat "$out_tmp" 2>/dev/null)"
+      rm -f "$out_tmp"
+      ;;
+    claude)
+      if [[ -z "${ANTHROPIC_API_KEY:-}" && -f "$E3D_CODE_CLAUDE_API_KEY_FILE" ]]; then
+        # shellcheck disable=SC1090
+        source "$E3D_CODE_CLAUDE_API_KEY_FILE"
+      fi
+      raw="$(printf '%s' "$prompt" | "$CLAUDE_BIN" --print --model "$model" \
+        --permission-mode "$CLAUDE_PERMISSION_MODE" --no-session-persistence 2>/dev/null)"
+      ;;
+    *)
+      raw=""
+      ;;
+  esac
+
+  tier="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | grep -Eo 'mini|default|high' | head -1)"
+
+  if [[ "$tier" != "mini" && "$tier" != "default" && "$tier" != "high" ]]; then
+    echo "warning: auto-route classification failed for phase $phase (provider: $provider); falling back to keyword heuristic" >&2
+    tier="$(phase_model_tier "$phase")"
+  fi
+
+  phase_tier_cache_store "$key" "$tier"
+  printf '%s\n' "$tier"
+}
+
+phase_execution_target() {
+  local phase="$1"
+  local default_provider="${2:-$PROVIDER}"
+  local tier
+  if override_execution_target "$phase" "$default_provider"; then return 0; fi
+  if annotation_execution_target "$phase" "$default_provider"; then return 0; fi
+  if [[ "$AUTO_ROUTE_TIER" == "1" ]]; then
+    tier="$(classify_phase_tier_llm "$phase" "$default_provider")"
+  else
+    tier="$(phase_model_tier "$phase")"
+  fi
+  case "$tier" in
+    high) printf '%s\t%s\n' "$default_provider" "$(provider_high_model "$default_provider")" ;;
+    mini) printf '%s\t%s\n' "$default_provider" "$(provider_mini_model "$default_provider")" ;;
+    default) printf '%s\t%s\n' "$default_provider" "$(provider_default_model "$default_provider")" ;;
+    *) die "unsupported model tier: $tier" ;;
+  esac
+}
+
+phase_provider() {
+  local phase="$1"
+  local default_provider="${2:-$PROVIDER}"
+  local provider model
+  IFS=$'\t' read -r provider model <<< "$(phase_execution_target "$phase" "$default_provider")"
+  printf '%s\n' "$provider"
+}
+
+phase_model() {
+  local phase="$1"
+  local default_provider="${2:-$PROVIDER}"
+  local provider model
+  IFS=$'\t' read -r provider model <<< "$(phase_execution_target "$phase" "$default_provider")"
+  printf '%s\n' "$model"
+}
+
+read_files_block() {
+  local phase="$1"
+  local files=()
+  local file
+  # shellcheck disable=SC2206
+  files=($COMMON_READ_FILES)
+  if include_context_file; then
+    files+=("$CONTEXT_FILE")
+  fi
+  while IFS= read -r file; do
+    [[ -n "$file" ]] && files+=("$file")
+  done < <(previous_summary_files "$phase")
+  while IFS= read -r file; do
+    [[ -n "$file" ]] && files+=("$file")
+  done < <(annotation_read_files "$phase")
+  if [[ ${#EXTRA_READ_FILES[@]} -gt 0 ]]; then
+    files+=("${EXTRA_READ_FILES[@]}")
+  fi
+
+  if [[ ${#files[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "Read first:"
+  echo "- ${SPEC_FILE}"
+  for file in "${files[@]}"; do
+    [[ -n "$file" ]] && echo "- $file"
+  done
+}
+
+phase_prompt() {
+  local phase="$1"
+  local verbose="$2"
+  local title output_guidance
+  title="$(phase_title "$phase")"
+  [[ -n "$title" ]] || die "phase not found in spec: $phase"
+  if [[ "$verbose" == "1" ]]; then
+    output_guidance="Detailed output is allowed because the runner was called with --verbose."
+  else
+    output_guidance="Keep user-facing progress and final output high level: describe phase, status, issues, and verification. Do not paste full code, diffs, or large file contents unless the user asks."
+  fi
+
+  cat <<EOF
+We are in ${ROOT_DIR}.
+
+Implement Phase ${phase} (${title}) from ${SPEC_FILE}.
+
+Output policy:
+${output_guidance}
+
+$(read_files_block "$phase")
+$(verification_hints_block "$phase")
+Resume:
+If resuming after an interruption, inspect the working tree first and continue this phase.
+
+Guardrails:
+- Keep changes scoped to this phase; do not implement later phases.
+- Preserve existing behavior unless this phase explicitly requires a change.
+- Use existing codebase patterns.
+- Do not touch node_modules.
+- Generate or update focused tests for every behavior changed in this phase.
+- Run the verification hints before finishing; the runner will rerun them independently.
+- Before finishing, write a concise handoff to $(summary_file "$phase") under "## Implementation Handoff". Include changes, decisions, tests run, and unresolved follow-ups. Keep it under 40 lines.
+
+Relevant phase section from the spec:
+
+$(extract_phase_body "$phase")
+EOF
+}
+
+list_phases() {
+  local index phase title provider model
+  for index in "${!PHASE_ORDER[@]}"; do
+    phase="${PHASE_ORDER[$index]}"
+    title="${PHASE_TITLES[$index]}"
+    provider="$(phase_provider "$phase")"
+    model="$(phase_model "$phase")"
+    printf 'Phase %s\t%s\t%s\t%s\n' "$phase" "$provider" "$model" "$title"
+  done
+}
+
+validate_phase_range() {
+  [[ "$FROM_PHASE" =~ ^[0-9]+$ ]] || die "invalid --from phase: $FROM_PHASE"
+  [[ "$TO_PHASE" =~ ^[0-9]+$ ]] || die "invalid --to phase: $TO_PHASE"
+  (( FROM_PHASE <= TO_PHASE )) || die "--from must be <= --to"
+}
+
+preflight_note() {
+  local level="$1"
+  shift
+  printf '%s: %s\n' "$level" "$*"
+}
+
+run_preflight() {
+  local warnings=0 errors=0
+  local phase file resolved_path selected=0
+  local common_files=()
+  local common_file
+  local phase_provider_name provider_name provider_bin_path
+  local provider model
+  local seen_codex=0 seen_claude=0
+  local -a add_dirs=()
+  local add_dir
+  local verification_shell_name
+
+  if [[ -f "$SPEC_FILE" ]]; then
+    preflight_note "ok" "spec file exists: $SPEC_FILE"
+  else
+    preflight_note "error" "spec file not found: $SPEC_FILE"
+    errors=$((errors + 1))
+  fi
+
+  if root_dir_exists; then
+    preflight_note "ok" "root directory exists: $ROOT_DIR"
+  else
+    preflight_note "error" "root directory not found or not a directory: $ROOT_DIR"
+    errors=$((errors + 1))
+  fi
+
+  if [[ -f "$SPEC_FILE" ]]; then
+    if (( ${#PHASE_ORDER[@]} > 0 )); then
+      :
+    else
+      preflight_note "error" "no phase headings found in $SPEC_FILE"
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if [[ -n "$TARGET" ]]; then
+    if [[ "$TARGET" == "all" ]]; then
+      if [[ -z "$FROM_PHASE" && -f "$SPEC_FILE" && ${#PHASE_ORDER[@]} -gt 0 ]]; then
+        FROM_PHASE="$(first_phase)"
+      fi
+      if [[ -z "$TO_PHASE" && -f "$SPEC_FILE" && ${#PHASE_ORDER[@]} -gt 0 ]]; then
+        TO_PHASE="$(last_phase)"
+      fi
+
+      if [[ "$FROM_PHASE" =~ ^[0-9]+$ ]]; then
+        preflight_note "ok" "--from phase is numeric: $FROM_PHASE"
+      else
+        preflight_note "error" "invalid --from phase: $FROM_PHASE"
+        errors=$((errors + 1))
+      fi
+
+      if [[ "$TO_PHASE" =~ ^[0-9]+$ ]]; then
+        preflight_note "ok" "--to phase is numeric: $TO_PHASE"
+      else
+        preflight_note "error" "invalid --to phase: $TO_PHASE"
+        errors=$((errors + 1))
+      fi
+
+      if [[ "$FROM_PHASE" =~ ^[0-9]+$ && "$TO_PHASE" =~ ^[0-9]+$ ]]; then
+        if (( FROM_PHASE <= TO_PHASE )); then
+          for phase in "${PHASE_ORDER[@]}"; do
+            if (( phase >= FROM_PHASE && phase <= TO_PHASE )); then
+              selected=$((selected + 1))
+            fi
+          done
+
+          if (( selected > 0 )); then
+            preflight_note "ok" "selected ${selected} phase(s) for target all"
+            if [[ "$MAX_PHASES_PER_RUN" =~ ^[0-9]+$ ]] && (( MAX_PHASES_PER_RUN > 0 && selected > MAX_PHASES_PER_RUN )); then
+              preflight_note "error" "selected ${selected} phases exceeds MAX_PHASES_PER_RUN=${MAX_PHASES_PER_RUN}; run a bounded --from/--to batch"
+              errors=$((errors + 1))
+            fi
+          else
+            preflight_note "error" "selected phase range does not include any phases"
+            errors=$((errors + 1))
+          fi
+        else
+          preflight_note "error" "--from must be <= --to"
+          errors=$((errors + 1))
+        fi
+      fi
+    else
+      if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
+        if phase_exists "$TARGET"; then
+          preflight_note "ok" "selected phase exists: $TARGET"
+        else
+          preflight_note "error" "phase not found in spec: $TARGET"
+          errors=$((errors + 1))
+        fi
+      else
+        preflight_note "error" "target must be all or a phase number"
+        errors=$((errors + 1))
+      fi
+    fi
+  fi
+
+  # shellcheck disable=SC2206
+  common_files=($COMMON_READ_FILES)
+  for common_file in "${common_files[@]}"; do
+    [[ -n "$common_file" ]] || continue
+    resolved_path="$(resolve_read_path "$common_file")"
+    if [[ -e "$resolved_path" ]]; then
+      :
+    else
+      preflight_note "warning" "common read file not found: $common_file"
+      warnings=$((warnings + 1))
+    fi
+  done
+
+  if (( ${#EXTRA_READ_FILES[@]} > 0 )); then
+    for file in "${EXTRA_READ_FILES[@]}"; do
+      resolved_path="$(resolve_read_path "$file")"
+      if [[ -e "$resolved_path" ]]; then
+        preflight_note "ok" "read file exists: $file"
+      else
+        preflight_note "error" "read file not found: $file"
+        errors=$((errors + 1))
+      fi
+    done
+  fi
+
+  if [[ "$RUN_VERIFICATION" == "1" ]]; then
+    verification_shell_name="$VERIFY_SHELL"
+    if [[ "$verification_shell_name" == */* ]]; then
+      if [[ -x "$verification_shell_name" ]]; then
+        preflight_note "ok" "verification shell is executable: $verification_shell_name"
+      else
+        preflight_note "error" "verification shell is not executable: $verification_shell_name"
+        errors=$((errors + 1))
+      fi
+    elif command -v "$verification_shell_name" >/dev/null 2>&1; then
+      preflight_note "ok" "verification shell found on PATH: $verification_shell_name"
+    else
+      preflight_note "error" "verification shell not found on PATH: $verification_shell_name"
+      errors=$((errors + 1))
+    fi
+  fi
+
+  if [[ -n "$TARGET" ]]; then
+    if [[ "$TARGET" == "all" ]]; then
+      for phase in "${PHASE_ORDER[@]}"; do
+        if (( phase >= FROM_PHASE && phase <= TO_PHASE )); then
+          IFS=$'\t' read -r provider model <<< "$(phase_execution_target "$phase")"
+          case "$provider" in
+            codex) seen_codex=1 ;;
+            claude) seen_claude=1 ;;
+          esac
+        fi
+      done
+    elif [[ "$TARGET" =~ ^[0-9]+$ ]] && phase_exists "$TARGET"; then
+      IFS=$'\t' read -r provider model <<< "$(phase_execution_target "$TARGET")"
+      case "$provider" in
+        codex) seen_codex=1 ;;
+        claude) seen_claude=1 ;;
+      esac
+    fi
+  fi
+
+  for provider in codex claude; do
+    if [[ "$provider" == "codex" && "$seen_codex" != "1" ]]; then
+      continue
+    fi
+    if [[ "$provider" == "claude" && "$seen_claude" != "1" ]]; then
+      continue
+    fi
+
+    provider_name="$(provider_display_name "$provider")"
+    provider_bin_path="$(provider_bin "$provider")"
+    phase_provider_name="$(printf '%s\n' "$provider" | tr '[:lower:]' '[:upper:]')"
+
+    if [[ "$provider_bin_path" == */* ]]; then
+      if [[ -x "$provider_bin_path" ]]; then
+        preflight_note "ok" "${provider_name} binary is executable: $provider_bin_path"
+      else
+        preflight_note "error" "${provider_name} binary is not executable: $provider_bin_path"
+        errors=$((errors + 1))
+      fi
+    else
+      if command -v "$provider_bin_path" >/dev/null 2>&1; then
+        preflight_note "ok" "${provider_name} binary found on PATH: $provider_bin_path"
+      else
+        preflight_note "error" "${provider_name} binary not found on PATH: $provider_bin_path"
+        errors=$((errors + 1))
+      fi
+    fi
+  done
+
+  if [[ -n "$ADD_DIRS" ]]; then
+    # shellcheck disable=SC2206
+    add_dirs=($ADD_DIRS)
+    for add_dir in "${add_dirs[@]}"; do
+      [[ -n "$add_dir" ]] || continue
+      if [[ -d "$add_dir" ]]; then
+        preflight_note "ok" "provider add-dir exists: $add_dir"
+      else
+        preflight_note "error" "provider add-dir not found or not a directory: $add_dir"
+        errors=$((errors + 1))
+      fi
+    done
+  fi
+
+  if (( errors > 0 )); then
+    preflight_note "result" "failed with ${errors} error(s), ${warnings} warning(s)"
+    return 1
+  fi
+
+  if (( warnings > 0 )); then
+    preflight_note "result" "ok with ${warnings} warning(s)"
+  else
+    preflight_note "result" "ok"
+  fi
+}
+
+run_codex_phase() {
+  local phase="$1"
+  local verbose="$2"
+  local model="$3"
+  local exit_status tokens=0 stderr_file
+  local -a codex_args=()
+  local -a add_dirs=()
+  local add_dir
+
+  echo "Status: starting Codex phase run."
+  codex_args=(
+    --ask-for-approval "$APPROVAL_POLICY"
+    "$MODE"
+  )
+  if [[ "$CODEX_EPHEMERAL" == "1" ]]; then
+    codex_args+=(--ephemeral)
+  fi
+  if [[ "$CODEX_SKIP_GIT_REPO_CHECK" == "1" ]]; then
+    codex_args+=(--skip-git-repo-check)
+  fi
+  if [[ "$CODEX_NETWORK_ACCESS" == "1" ]]; then
+    codex_args+=(-c sandbox_workspace_write.network_access=true)
+  fi
+  codex_args+=(
+    -c "model_context_window=${CODEX_CONTEXT_WINDOW}"
+    -c "model_auto_compact_token_limit=${CODEX_AUTO_COMPACT_TOKEN_LIMIT}"
+  )
+  if [[ -n "$ADD_DIRS" ]]; then
+    # shellcheck disable=SC2206
+    add_dirs=($ADD_DIRS)
+    for add_dir in "${add_dirs[@]}"; do
+      [[ -n "$add_dir" ]] || continue
+      codex_args+=(--add-dir "$add_dir")
+    done
+  fi
+  codex_args+=(
+    --model "$model"
+    --cd "$ROOT_DIR"
+    --sandbox "$SANDBOX_MODE"
+    -
+  )
+
+  stderr_file="$(mktemp "${TMPDIR:-/tmp}/e3d-code-usage.XXXXXX")"
+  if phase_prompt "$phase" "$verbose" | "$CODEX_BIN" "${codex_args[@]}" 2> "$stderr_file"; then
+    exit_status=0
+  else
+    exit_status=$?
+  fi
+
+  cat "$stderr_file" >&2
+  tokens="$(awk 'take { gsub(/,/,"",$0); if ($0 ~ /^[0-9]+$/) total += $0; take=0 } /^tokens used$/ { take=1 } END { print total+0 }' "$stderr_file")"
+  rm -f "$stderr_file"
+  printf 'Provider tokens: %s (ceiling: %s)\n' "$tokens" "$MAX_PROVIDER_TOKENS_PER_PHASE"
+  if [[ "$MAX_PROVIDER_TOKENS_PER_PHASE" =~ ^[0-9]+$ ]] \
+    && (( MAX_PROVIDER_TOKENS_PER_PHASE > 0 && tokens > MAX_PROVIDER_TOKENS_PER_PHASE )); then
+    printf 'error: phase %s exceeded provider token ceiling (%s > %s)\n' \
+      "$phase" "$tokens" "$MAX_PROVIDER_TOKENS_PER_PHASE" >&2
+    exit_status=75
+  fi
+
+  return "$exit_status"
+}
+
+run_claude_phase() {
+  local phase="$1"
+  local verbose="$2"
+  local model="$3"
+  local exit_status
+  local -a claude_args=()
+  local -a add_dirs=()
+  local add_dir
+
+  echo "Status: starting Claude phase run."
+  if [[ -z "${ANTHROPIC_API_KEY:-}" && -f "$E3D_CODE_CLAUDE_API_KEY_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$E3D_CODE_CLAUDE_API_KEY_FILE"
+  fi
+  claude_args=(
+    --print
+    --model "$model"
+    --permission-mode "$CLAUDE_PERMISSION_MODE"
+  )
+  if [[ "$CLAUDE_NO_SESSION_PERSISTENCE" == "1" ]]; then
+    claude_args+=(--no-session-persistence)
+  fi
+  if [[ -n "$ADD_DIRS" ]]; then
+    # shellcheck disable=SC2206
+    add_dirs=($ADD_DIRS)
+    for add_dir in "${add_dirs[@]}"; do
+      [[ -n "$add_dir" ]] || continue
+      claude_args+=(--add-dir "$add_dir")
+    done
+  fi
+
+  if phase_prompt "$phase" "$verbose" | "$CLAUDE_BIN" "${claude_args[@]}"; then
+    exit_status=0
+  else
+    exit_status=$?
+  fi
+
+  return "$exit_status"
+}
+
+run_phase() {
+  local phase="$1"
+  local dry_run="$2"
+  local verbose="${3:-0}"
+  local provider model title timestamp exit_status provider_name
+  title="$(phase_title "$phase")"
+  [[ -n "$title" ]] || die "phase not found in spec: $phase"
+  IFS=$'\t' read -r provider model <<< "$(phase_execution_target "$phase")"
+  provider_name="$(provider_display_name "$provider")"
+  timestamp="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+
+  echo "== Phase ${phase}: ${title} =="
+  echo "Provider: ${provider}"
+  echo "Model: ${model}"
+
+  if [[ ! -d "$SUMMARY_DIR" ]]; then
+    mkdir -p "$SUMMARY_DIR" || die "failed to prepare summary directory: $SUMMARY_DIR"
+  fi
+
+  if [[ "$dry_run" == "1" ]]; then
+    echo "Status: dry-run only; ${provider_name} was not started."
+    if [[ "$verbose" == "1" ]]; then
+      echo "--- prompt ---"
+      phase_prompt "$phase" "$verbose"
+      echo "--- end prompt ---"
+    fi
+    LAST_VERIFICATION_REPORT="- Planned for non-dry execution."
+    while IFS= read -r verification_command; do
+      [[ -n "$verification_command" ]] || continue
+      LAST_VERIFICATION_REPORT="${LAST_VERIFICATION_REPORT}"$'\n'"- \`${verification_command}\`"
+    done < <(phase_verification_commands "$phase")
+    exit_status=0
+  else
+    case "$provider" in
+      codex)
+        if run_codex_phase "$phase" "$verbose" "$model"; then
+          exit_status=0
+        else
+          exit_status=$?
+        fi
+        ;;
+      claude)
+        if run_claude_phase "$phase" "$verbose" "$model"; then
+          exit_status=0
+        else
+          exit_status=$?
+        fi
+        ;;
+      *)
+        die "unsupported provider: $PROVIDER"
+        ;;
+    esac
+
+    if [[ "$exit_status" == "0" ]]; then
+      if run_phase_verification "$phase"; then
+        :
+      else
+        exit_status=$?
+      fi
+    else
+      LAST_VERIFICATION_REPORT="- Not run because the provider exited with status ${exit_status}."
+    fi
+  fi
+
+  write_manifest_row "$timestamp" "$phase" "$title" "$provider" "$model" "$dry_run" "$exit_status" || true
+  write_phase_summary "$timestamp" "$phase" "$title" "$provider" "$model" "$exit_status" || true
+  if [[ "$exit_status" == "0" ]]; then
+    echo "Status: phase ${phase} completed."
+  else
+    echo "Status: phase ${phase} failed with exit status ${exit_status}."
+  fi
+  return "$exit_status"
+}
+
+SPEC_FILE=""
+TARGET=""
+DRY_RUN="0"
+LIST_ONLY="0"
+PREFLIGHT_ONLY="0"
+PREPARE_CONTEXT_ONLY="0"
+REFRESH_CONTEXT="0"
+VERBOSE="0"
+FROM_PHASE=""
+TO_PHASE=""
+EXTRA_READ_FILES=()
+LAST_VERIFICATION_REPORT=""
+
+if [[ $# -ge 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ge 1 && ( "$1" == "--version" || "$1" == "-V" ) ]]; then
+  printf 'e3d-code %s\n' "$VERSION"
+  exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+SPEC_FILE="$1"
+shift
+
+if [[ $# -gt 0 && "$1" != --* ]]; then
+  TARGET="$1"
+  shift
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      DRY_RUN="1"
+      shift
+      ;;
+    --verbose)
+      VERBOSE="1"
+      shift
+      ;;
+    --preflight)
+      PREFLIGHT_ONLY="1"
+      shift
+      ;;
+    --prepare-context)
+      PREPARE_CONTEXT_ONLY="1"
+      shift
+      ;;
+    --refresh-context)
+      REFRESH_CONTEXT="1"
+      shift
+      ;;
+    --list)
+      LIST_ONLY="1"
+      shift
+      ;;
+    --auto-route)
+      AUTO_ROUTE_TIER="1"
+      shift
+      ;;
+    --from)
+      [[ $# -ge 2 ]] || die "--from requires a phase number"
+      FROM_PHASE="$2"
+      shift 2
+      ;;
+    --from=*)
+      FROM_PHASE="${1#--from=}"
+      shift
+      ;;
+    --to)
+      [[ $# -ge 2 ]] || die "--to requires a phase number"
+      TO_PHASE="$2"
+      shift 2
+      ;;
+    --to=*)
+      TO_PHASE="${1#--to=}"
+      shift
+      ;;
+    --provider)
+      [[ $# -ge 2 ]] || die "--provider requires a value"
+      PROVIDER="$2"
+      shift 2
+      ;;
+    --provider=*)
+      PROVIDER="${1#--provider=}"
+      shift
+      ;;
+    --read)
+      [[ $# -ge 2 ]] || die "--read requires a path"
+      EXTRA_READ_FILES+=("$2")
+      shift 2
+      ;;
+    --read=*)
+      EXTRA_READ_FILES+=("${1#--read=}")
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --version|-V)
+      printf 'e3d-code %s\n' "$VERSION"
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+case "$PROVIDER" in
+  codex|claude)
+    ;;
+  *)
+    die "unsupported provider: $PROVIDER"
+    ;;
+esac
+
+require_spec
+load_phase_metadata
+
+if (( ${#PHASE_ORDER[@]} == 0 )); then
+  die "no phase headings found in $SPEC_FILE"
+fi
+
+if [[ "$LIST_ONLY" == "1" ]]; then
+  list_phases
+  exit 0
+fi
+
+if [[ "$PREFLIGHT_ONLY" == "1" ]]; then
+  run_preflight
+  exit $?
+fi
+
+if [[ "$PREPARE_CONTEXT_ONLY" == "1" ]]; then
+  write_shared_context
+  echo "Wrote shared context: $CONTEXT_FILE"
+  exit 0
+fi
+
+if [[ -z "$TARGET" ]]; then
+  die "missing target: use all, a phase number, or --list"
+fi
+
+if [[ "$TARGET" == "all" ]]; then
+  FROM_PHASE="${FROM_PHASE:-$(first_phase)}"
+  TO_PHASE="${TO_PHASE:-$(last_phase)}"
+  validate_phase_range
+
+  selected_any="0"
+  for phase in "${PHASE_ORDER[@]}"; do
+    if (( phase >= FROM_PHASE && phase <= TO_PHASE )); then
+      selected_any="1"
+      break
+    fi
+  done
+  [[ "$selected_any" == "1" ]] || die "selected phase range does not include any phases"
+
+  if [[ "$DRY_RUN" != "1" && "$SKIP_PREFLIGHT" != "1" ]]; then
+    run_preflight
+  fi
+
+  if shared_context_enabled && [[ "$REFRESH_CONTEXT" == "1" || ! -f "$CONTEXT_FILE" ]]; then
+    write_shared_context
+  fi
+
+  for phase in "${PHASE_ORDER[@]}"; do
+    if (( phase >= FROM_PHASE && phase <= TO_PHASE )); then
+      run_phase "$phase" "$DRY_RUN" "${VERBOSE:-0}"
+    fi
+  done
+else
+  [[ "$TARGET" =~ ^[0-9]+$ ]] || die "target must be all or a phase number"
+  phase_exists "$TARGET" || die "phase not found in spec: $TARGET"
+
+  if [[ "$DRY_RUN" != "1" && "$SKIP_PREFLIGHT" != "1" ]]; then
+    run_preflight
+  fi
+
+  if shared_context_enabled && [[ "$REFRESH_CONTEXT" == "1" || ! -f "$CONTEXT_FILE" ]]; then
+    write_shared_context
+  fi
+
+  run_phase "$TARGET" "$DRY_RUN" "${VERBOSE:-0}"
+fi

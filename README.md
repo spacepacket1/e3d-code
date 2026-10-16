@@ -1,18 +1,20 @@
-# spec2code
+# e3d-code
 
 Run Codex CLI or Claude CLI phase-by-phase from Markdown feature specs with model routing, shared context, and resumable execution.
 
-Current version: `0.3.0`
+Current version: `0.4.0`
 
-`spec2code` turns a phased Markdown spec into separate provider runs. Each phase gets a fresh conversation, a focused prompt, and a model selected from conservative defaults or explicit overrides.
+> **Renamed from `spec2code`.** The command is now `e3d-code`. For compatibility, `bin/spec2code` still works as a shim, repos that only have the old `.spec2code/` state directory keep using it (new runs use `.e3d-code/`), and the old `S2C_CLAUDE_API_KEY_FILE` variable is still honored alongside `E3D_CODE_CLAUDE_API_KEY_FILE`.
+
+`e3d-code` turns a phased Markdown spec into separate provider runs. Each phase gets a fresh conversation, a focused prompt, and a model selected from conservative defaults or explicit overrides.
 
 ## Demo
 
 Featured as an e3d-cast gallery sample:
 
-<video src="https://cast.e3d.ai/samples/spec2code/video.mp4" controls width="720"></video>
+<video src="https://cast.e3d.ai/samples/e3d-code/video.mp4" controls width="720"></video>
 
-[Watch the video](https://cast.e3d.ai/samples/spec2code/video.mp4)
+[Watch the video](https://cast.e3d.ai/samples/e3d-code/video.mp4)
 
 ## Why
 
@@ -36,15 +38,15 @@ claude --help
 Clone the repo and add `bin` to your `PATH`:
 
 ```bash
-git clone https://github.com/spacepacket1/spec2code.git
-cd spec2code
+git clone https://github.com/spacepacket1/e3d-code.git
+cd e3d-code
 export PATH="$PWD/bin:$PATH"
 ```
 
 Or run it directly:
 
 ```bash
-./bin/spec2code path/to/spec.md --list
+./bin/e3d-code path/to/spec.md --list
 ```
 
 ## Spec Format
@@ -65,7 +67,7 @@ Phase metadata is parsed once per runner process, sorted numerically, and duplic
 List phases with provider and model:
 
 ```bash
-spec2code docs/feature-ticket.md --list
+e3d-code docs/feature-ticket.md --list
 ```
 
 This prints provider and model per phase, for example:
@@ -75,37 +77,37 @@ Phase 1  codex   gpt-5.4-mini  Core Parser
 Phase 2  claude  sonnet        Report Writer
 ```
 
-By default, a phase with no `runner:model` annotation and no `MODEL_OVERRIDES` entry gets its tier (`mini`/`default`/`high`) from a static keyword grep over its title and body (`phase_model_tier` in `bin/spec2code`) — fast and free, but not actual judgment. Pass `--auto-route` to replace that keyword grep with one cheap model call per phase instead, asking the provider that will execute the phase (via its own `mini` tier — `haiku` for Claude, `gpt-5.4-mini` for Codex) to classify the phase's real complexity:
+By default, a phase with no `runner:model` annotation and no `MODEL_OVERRIDES` entry gets its tier (`mini`/`default`/`high`) from a static keyword grep over its title and body (`phase_model_tier` in `bin/e3d-code`) — fast and free, but not actual judgment. Pass `--auto-route` to replace that keyword grep with one cheap model call per phase instead, asking the provider that will execute the phase (via its own `mini` tier — `haiku` for Claude, `gpt-5.4-mini` for Codex) to classify the phase's real complexity:
 
 ```bash
-spec2code docs/feature-ticket.md --list --auto-route
-spec2code docs/feature-ticket.md --list --provider claude --auto-route
+e3d-code docs/feature-ticket.md --list --auto-route
+e3d-code docs/feature-ticket.md --list --provider claude --auto-route
 ```
 
-An explicit `runner:model=` annotation or a `MODEL_OVERRIDES` entry always wins over `--auto-route` — this only replaces the keyword-heuristic fallback, never author intent. Classifications are cached by `(provider, title, body)` content digest in `AUTO_ROUTE_CACHE_FILE` (default `.spec2code/route-cache.tsv`), so re-running `--list` against an unchanged phase costs nothing on the second call. If the classifier call fails or returns something unparseable, the runner falls back to the keyword heuristic and prints a warning rather than failing the run.
+An explicit `runner:model=` annotation or a `MODEL_OVERRIDES` entry always wins over `--auto-route` — this only replaces the keyword-heuristic fallback, never author intent. Classifications are cached by `(provider, title, body)` content digest in `AUTO_ROUTE_CACHE_FILE` (default `.e3d-code/route-cache.tsv`), so re-running `--list` against an unchanged phase costs nothing on the second call. If the classifier call fails or returns something unparseable, the runner falls back to the keyword heuristic and prints a warning rather than failing the run.
 
 Print the installed runner version:
 
 ```bash
-spec2code --version
+e3d-code --version
 ```
 
 Dry-run one phase status:
 
 ```bash
-spec2code docs/feature-ticket.md 3 --dry-run
+e3d-code docs/feature-ticket.md 3 --dry-run
 ```
 
 Print the full generated prompt for debugging:
 
 ```bash
-spec2code docs/feature-ticket.md 3 --dry-run --verbose
+e3d-code docs/feature-ticket.md 3 --dry-run --verbose
 ```
 
 Run one phase with Claude:
 
 ```bash
-spec2code docs/feature-ticket.md 3 --provider claude
+e3d-code docs/feature-ticket.md 3 --provider claude
 ```
 
 `--provider` sets the default provider for phases that do not have a mixed-provider override.
@@ -113,49 +115,49 @@ spec2code docs/feature-ticket.md 3 --provider claude
 Run preflight checks only:
 
 ```bash
-spec2code docs/feature-ticket.md --preflight
+e3d-code docs/feature-ticket.md --preflight
 ```
 
 Prepare shared repo context only:
 
 ```bash
-spec2code docs/feature-ticket.md --prepare-context
+e3d-code docs/feature-ticket.md --prepare-context
 ```
 
 Run one phase:
 
 ```bash
-spec2code docs/feature-ticket.md 3
+e3d-code docs/feature-ticket.md 3
 ```
 
 Run all phases:
 
 ```bash
-spec2code docs/feature-ticket.md all
+e3d-code docs/feature-ticket.md all
 ```
 
 Refresh shared repo context before execution:
 
 ```bash
-spec2code docs/feature-ticket.md all --refresh-context
+e3d-code docs/feature-ticket.md all --refresh-context
 ```
 
 Resume from a phase after a rate limit or interruption:
 
 ```bash
-spec2code docs/feature-ticket.md all --from 9
+e3d-code docs/feature-ticket.md all --from 9
 ```
 
 Run a bounded range:
 
 ```bash
-spec2code docs/feature-ticket.md all --from 4 --to 8
+e3d-code docs/feature-ticket.md all --from 4 --to 8
 ```
 
 Add files the provider should read first:
 
 ```bash
-spec2code docs/feature-ticket.md 5 \
+e3d-code docs/feature-ticket.md 5 \
   --read package.json \
   --read pipeline.js \
   --read server.js
@@ -164,9 +166,9 @@ spec2code docs/feature-ticket.md 5 \
 Recommended workflow for a new spec:
 
 ```bash
-spec2code docs/feature-ticket.md --preflight
-spec2code docs/feature-ticket.md --prepare-context
-spec2code docs/feature-ticket.md all
+e3d-code docs/feature-ticket.md --preflight
+e3d-code docs/feature-ticket.md --prepare-context
+e3d-code docs/feature-ticket.md all
 ```
 
 Use `--refresh-context` when the repo changed enough that the shared context should be regenerated before execution.
@@ -174,7 +176,7 @@ Normal non-dry-run execution runs preflight automatically unless `SKIP_PREFLIGHT
 
 ## Runtime State
 
-`.spec2code/` is runner runtime state. It is generated on demand and can contain:
+`.e3d-code/` is runner runtime state. It is generated on demand and can contain:
 
 - `context.md`: shared repo context used to reduce repeated setup across phases
 - `manifest.tsv`: one tab-separated row per attempted phase run
@@ -186,9 +188,9 @@ Providers are asked to record a concise implementation handoff with changes, dec
 
 These generated files are safe to delete:
 
-- `.spec2code/context.md`
-- `.spec2code/manifest.tsv`
-- `.spec2code/summaries/`
+- `.e3d-code/context.md`
+- `.e3d-code/manifest.tsv`
+- `.e3d-code/summaries/`
 
 Deleting them removes runner history and cached context, but does not affect your source files.
 
@@ -230,14 +232,14 @@ Override exact phase-to-model mapping:
 
 ```bash
 MODEL_OVERRIDES="4:gpt-5.5,14:gpt-5.4-mini" \
-  spec2code docs/feature-ticket.md all
+  e3d-code docs/feature-ticket.md all
 ```
 
 Override exact phase-to-provider-and-model mapping:
 
 ```bash
 MODEL_OVERRIDES="1:codex:gpt-5.4,2:claude:sonnet" \
-  spec2code docs/feature-ticket.md all
+  e3d-code docs/feature-ticket.md all
 ```
 
 Override default model names:
@@ -246,7 +248,7 @@ Override default model names:
 DEFAULT_MODEL=gpt-5.4 \
 HIGH_MODEL=gpt-5.5 \
 MINI_MODEL=gpt-5.4-mini \
-  spec2code docs/feature-ticket.md --list
+  e3d-code docs/feature-ticket.md --list
 ```
 
 ## Configuration
@@ -262,10 +264,10 @@ Environment overrides:
 
 ```bash
 ROOT_DIR=/path/to/repo
-STATE_DIR=/path/to/repo/.spec2code
-CONTEXT_FILE=/path/to/repo/.spec2code/context.md
-MANIFEST_FILE=/path/to/repo/.spec2code/manifest.tsv
-SUMMARY_DIR=/path/to/repo/.spec2code/summaries
+STATE_DIR=/path/to/repo/.e3d-code
+CONTEXT_FILE=/path/to/repo/.e3d-code/context.md
+MANIFEST_FILE=/path/to/repo/.e3d-code/manifest.tsv
+SUMMARY_DIR=/path/to/repo/.e3d-code/summaries
 PROVIDER=codex
 CODEX_BIN=codex
 CLAUDE_BIN=claude
@@ -289,13 +291,13 @@ HIGH_MODEL=<provider high>
 MINI_MODEL=<provider mini>
 MODEL_OVERRIDES="4:gpt-5.5,14:claude:sonnet"
 AUTO_ROUTE_TIER=0
-AUTO_ROUTE_CACHE_FILE=/path/to/repo/.spec2code/route-cache.tsv
+AUTO_ROUTE_CACHE_FILE=/path/to/repo/.e3d-code/route-cache.tsv
 COMMON_READ_FILES="package.json pipeline.js server.js"
 MAX_PHASES_PER_RUN=8
 MAX_PROVIDER_TOKENS_PER_PHASE=120000
 ```
 
-- `STATE_DIR`, `CONTEXT_FILE`, `MANIFEST_FILE`, `SUMMARY_DIR`: runtime-state paths under `.spec2code/`
+- `STATE_DIR`, `CONTEXT_FILE`, `MANIFEST_FILE`, `SUMMARY_DIR`: runtime-state paths under `.e3d-code/`
 - `PROVIDER`: `codex` or `claude`
 - `CODEX_BIN`, `CLAUDE_BIN`: provider CLI binary name or path
 - `SKIP_PREFLIGHT`: set to `1` to skip automatic preflight on normal runs
@@ -310,12 +312,12 @@ MAX_PROVIDER_TOKENS_PER_PHASE=120000
 - `CODEX_NETWORK_ACCESS`: set to `1` to pass `-c sandbox_workspace_write.network_access=true` to `codex exec`, enabling outbound network and inbound socket binds inside the `workspace-write` sandbox; default `0` keeps Codex's own network-disabled default. Needed for phases whose verification binds a listening socket (e.g. a local web-server test) — without it, `codex exec`'s sandbox denies the bind with `EPERM`.
 - `CLAUDE_PERMISSION_MODE`: passed to `claude --permission-mode`; defaults to `bypassPermissions` because `--print` has no TTY to answer an interactive approval prompt — `default` mode silently denies every Write/Edit/Bash call while the phase still exits 0 with nothing changed (confirmed directly against `claude` 2.1.296). This mirrors Codex's own unattended default above (`APPROVAL_POLICY=on-request` inside `workspace-write`); s2c's external safety rails (worktree isolation, `protected_paths`, diff ceilings, draft PRs) are the real guard for both providers, not per-call prompts that can't fire headless anyway.
 - `CLAUDE_NO_SESSION_PERSISTENCE`: set to `0` to let Claude persist phase sessions
-- `S2C_CLAUDE_API_KEY_FILE` (default `~/.config/e3d-pilot/anthropic-api-key`): a shell snippet (`export ANTHROPIC_API_KEY="..."`) sourced before a Claude phase, but only if `ANTHROPIC_API_KEY` isn't already set in the environment. Defaults unattended Claude phases to metered API billing instead of whatever interactive subscription auth the calling shell happens to have — set `ANTHROPIC_API_KEY` yourself beforehand to use something else.
+- `E3D_CODE_CLAUDE_API_KEY_FILE` (default `~/.config/e3d-pilot/anthropic-api-key`): a shell snippet (`export ANTHROPIC_API_KEY="..."`) sourced before a Claude phase, but only if `ANTHROPIC_API_KEY` isn't already set in the environment. Defaults unattended Claude phases to metered API billing instead of whatever interactive subscription auth the calling shell happens to have — set `ANTHROPIC_API_KEY` yourself beforehand to use something else.
 - `ADD_DIRS`: space-separated directories to pass as repeated `--add-dir` flags to the selected provider
 - `DEFAULT_MODEL`, `HIGH_MODEL`, `MINI_MODEL`: provider-specific default routed model names
 - `MODEL_OVERRIDES`: exact `phase:model` or `phase:provider:model` mapping that beats heuristic routing and spec annotations
 - `AUTO_ROUTE_TIER`: set to `1` (or pass `--auto-route`) to classify tier via a cheap model call instead of the keyword heuristic, for phases with no annotation/override — see Usage above
-- `AUTO_ROUTE_CACHE_FILE` (default `.spec2code/route-cache.tsv`): where `--auto-route` classification results are cached, keyed by `(provider, title, body)` digest
+- `AUTO_ROUTE_CACHE_FILE` (default `.e3d-code/route-cache.tsv`): where `--auto-route` classification results are cached, keyed by `(provider, title, body)` digest
 - `COMMON_READ_FILES`: space-separated files to include in every phase prompt when present
 - `MAX_PHASES_PER_RUN` (default `8`): an `all` or bounded `--from`/`--to` run that would execute more phases than this fails preflight before any provider is launched, forcing a smaller batch; set to `0` to disable
 - `MAX_PROVIDER_TOKENS_PER_PHASE` (default `120000`): fails a phase after the fact if the provider reports using more tokens than this; set to `0` to disable

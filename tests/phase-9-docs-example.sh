@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/spec2code"
+RUNNER="${REPO_DIR}/bin/e3d-code"
 SPEC_FILE="${REPO_DIR}/examples/feature-ticket.md"
 
 bash -n "$RUNNER"

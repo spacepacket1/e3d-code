@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="$REPO_DIR/bin/spec2code"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec2code-budget.XXXXXX")"
+RUNNER="$REPO_DIR/bin/e3d-code"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/e3d-code-budget.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 mkdir -p "$TMP_DIR/root"

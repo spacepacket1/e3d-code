@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUNNER="${REPO_DIR}/bin/spec2code"
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/spec2code-phase8.XXXXXX")"
+RUNNER="${REPO_DIR}/bin/e3d-code"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/e3d-code-phase8.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 SPEC_FILE="${TMP_DIR}/phase-8-spec.md"

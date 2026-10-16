@@ -1,0 +1,10 @@
+{
+  "name": "e3d-code",
+  "version": "0.4.0",
+  "description": "Run Codex CLI or Claude CLI phase-by-phase from Markdown feature specs with model routing, shared context, and resumable execution.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/spacepacket1/e3d-code.git" },
+  "bin": { "e3d-code": "bin/e3d-code" },
+  "files": ["bin/e3d-code", "README.md", "LICENSE", "examples"],
+  "engines": { "node": ">=18" }
+}
