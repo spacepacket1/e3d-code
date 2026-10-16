@@ -349,4 +349,4 @@ You should still review diffs after each phase.
 
 ## License
 
-MIT
+[MIT](LICENSE) © 2026 FutCo LLC. Part of the [FutCo](https://futco.ai/projects) open-source ecosystem.
