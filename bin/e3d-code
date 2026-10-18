@@ -1071,6 +1071,17 @@ read_files_block() {
   done
 }
 
+# Optional extra guidance appended AFTER the built-in guardrails. It can only add
+# instructions: the guardrails above it are never replaced or removed. Used by
+# harness-optimization experiments; unset means the prompt is unchanged.
+extra_guidance_block() {
+  local file="${E3D_CODE_EXTRA_GUIDANCE_FILE:-}"
+  [[ -n "$file" ]] || return 0
+  printf '\nAdditional guidance (supplements, and never overrides, the guardrails above):\n'
+  cat "$file"
+  printf '\n'
+}
+
 phase_prompt() {
   local phase="$1"
   local verbose="$2"
@@ -1081,6 +1092,11 @@ phase_prompt() {
     output_guidance="Detailed output is allowed because the runner was called with --verbose."
   else
     output_guidance="Keep user-facing progress and final output high level: describe phase, status, issues, and verification. Do not paste full code, diffs, or large file contents unless the user asks."
+  fi
+
+  # Checked here, not in extra_guidance_block: die inside $(...) would only exit the subshell.
+  if [[ -n "${E3D_CODE_EXTRA_GUIDANCE_FILE:-}" && ! -r "$E3D_CODE_EXTRA_GUIDANCE_FILE" ]]; then
+    die "E3D_CODE_EXTRA_GUIDANCE_FILE not readable: $E3D_CODE_EXTRA_GUIDANCE_FILE"
   fi
 
   cat <<EOF
@@ -1104,7 +1120,7 @@ Guardrails:
 - Generate or update focused tests for every behavior changed in this phase.
 - Run the verification hints before finishing; the runner will rerun them independently.
 - Before finishing, write a concise handoff to $(summary_file "$phase") under "## Implementation Handoff". Include changes, decisions, tests run, and unresolved follow-ups. Keep it under 40 lines.
-
+$(extra_guidance_block)
 Relevant phase section from the spec:
 
 $(extract_phase_body "$phase")
