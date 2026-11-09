@@ -1141,6 +1141,10 @@ list_phases() {
 validate_phase_range() {
   [[ "$FROM_PHASE" =~ ^[0-9]+$ ]] || die "invalid --from phase: $FROM_PHASE"
   [[ "$TO_PHASE" =~ ^[0-9]+$ ]] || die "invalid --to phase: $TO_PHASE"
+  # Normalize to base 10 so leading-zero decimal values (e.g. 08, 09) are
+  # treated as decimal and not rejected as invalid octal by Bash arithmetic.
+  FROM_PHASE=$((10#$FROM_PHASE))
+  TO_PHASE=$((10#$TO_PHASE))
   (( FROM_PHASE <= TO_PHASE )) || die "--from must be <= --to"
 }
 
